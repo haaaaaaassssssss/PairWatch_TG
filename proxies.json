@@ -1,0 +1,81 @@
+{
+  "proxies": [
+    {
+      "host": "179.61.172.80",
+      "port": 6631,
+      "username": "ecayyngo",
+      "password": "h9e81ku5p0jj",
+      "dirname": "chanel"
+    },
+    {
+      "host": "192.168.0.2",
+      "port": 8080,
+      "username": "user2",
+      "password": "password2",
+      "dirname": "anotherdirname"
+    },
+    {
+      "host": "179.61.172.234",
+      "port": 6785,
+      "username": "ecayyngo",
+      "password": "h9e81ku5p0jj",
+      "dirname": "johnkilo"
+    },
+    {
+      "host": "179.61.172.0",
+      "port": 6551,
+      "username": "ecayyngo",
+      "password": "h9e81ku5p0jj",
+      "dirname": "castlebravo"
+    },
+    {
+      "host": "179.61.172.100",
+      "port": 6651,
+      "username": "ecayyngo",
+      "password": "h9e81ku5p0jj",
+      "dirname": "fatman"
+    },
+    {
+      "host": "179.61.172.83",
+      "port": 6634,
+      "username": "ecayyngo",
+      "password": "h9e81ku5p0jj",
+      "dirname": "trinitytest"
+    },
+    {
+      "host": "179.61.172.238",
+      "port": 6789,
+      "username": "ecayyngo",
+      "password": "h9e81ku5p0jj",
+      "dirname": "losalamos"
+    },
+    {
+      "host": "179.61.172.116",
+      "port": 6667,
+      "username": "ecayyngo",
+      "password": "h9e81ku5p0jj",
+      "dirname": "starfish"
+    },
+    {
+      "host": "179.61.172.89",
+      "port": 6640,
+      "username": "ecayyngo",
+      "password": "h9e81ku5p0jj",
+      "dirname": "edwardteller"
+    },
+    {
+      "host": "179.61.172.12",
+      "port": 6563,
+      "username": "ecayyngo",
+      "password": "h9e81ku5p0jj",
+      "dirname": ""
+    },
+    {
+      "host": "179.61.172.47",
+      "port": 6598,
+      "username": "ecayyngo",
+      "password": "h9e81ku5p0jj",
+      "dirname": "sandstone"
+    }
+  ]
+}
