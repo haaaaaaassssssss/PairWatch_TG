@@ -8,13 +8,6 @@
       "dirname": "chanel"
     },
     {
-      "host": "192.168.0.2",
-      "port": 8080,
-      "username": "user2",
-      "password": "password2",
-      "dirname": "anotherdirname"
-    },
-    {
       "host": "179.61.172.234",
       "port": 6785,
       "username": "ecayyngo",
