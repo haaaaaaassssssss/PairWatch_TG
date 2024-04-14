@@ -7,8 +7,13 @@ from models import ValidateLink
 
 Link = Query()
 
+WHITELISTED_USERS = ['belgxz','roidv']
 
 async def add(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = update.message.from_user.username
+    if user_id not in WHITELISTED_USERS:
+        await update.message.reply_text('You are not authorized to use this command.')
+        return
     async with dblock:
         args_str = ' '.join(context.args)
         if args_str.startswith('"'):
@@ -45,6 +50,10 @@ async def add(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def delete(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = update.message.from_user.username
+    if user_id not in WHITELISTED_USERS:
+        await update.message.reply_text('You are not authorized to use this command.')
+        return
     async with dblock:
         if context.args:
             title = ' '.join(context.args)
@@ -60,6 +69,10 @@ async def delete(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def list_links(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = update.message.from_user.username
+    if user_id not in WHITELISTED_USERS:
+        await update.message.reply_text('You are not authorized to use this command.')
+        return
     async with dblock:
         links = link_db.all()
         message = 'Links:\n' + '\n'.join([f"{link.doc_id}: {link['title']} - {link['url']}" for link in links])
