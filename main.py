@@ -1,8 +1,8 @@
 import asyncio
 import logging
-from datetime import datetime
-
-import pytz
+import os
+import time
+from datetime import datetime, timezone
 from DrissionPage import ChromiumOptions
 from DrissionPage._pages.chromium_page import ChromiumPage
 from bs4 import BeautifulSoup
@@ -10,29 +10,28 @@ from curl_cffi import requests
 from telegram.ext import Application, CommandHandler
 from telegram.helpers import escape_markdown
 from tinydb import TinyDB, Query
-
-import commands
+from commands import add, delete, list_links
 from extensions import ProxyAuthExtension
 from utils import setup_logging, convert_to_hashable
-dblock = asyncio.Lock()
-cookies_dblock = asyncio.Lock()
-pairs_dblock = asyncio.Lock()
-CookiesDB = TinyDB('cookies.json')
-PairsDB = TinyDB('pairs.json')
-link_db = TinyDB('links.json')
-Link = Query()
+from resources import dblock, cookies_dblock, pairs_dblock, CookiesDB, PairsDB, link_db, Link
 
-def getcookies_of_proxy(proxy_ip, proxy_port, proxy_user, proxy_password):
+os.environ["PYTHONASYNCIODEBUG"] = "1"
+
+
+def getcookies_of_proxy(proxy_ip, proxy_port, proxy_user, proxy_password, return_expiry_only=False):
     Q = Query()
     result = CookiesDB.search(
         (Q.proxy.host == proxy_ip) &
         (Q.proxy.port == proxy_port) &
-        (Q.proxy.user == proxy_user) &
+        (Q.proxy.username == proxy_user) &
         (Q.proxy.password == proxy_password)
     )
 
     if result:
-        return result[0]['cookies']
+        if return_expiry_only:
+            return result[0]['last_refreshed']
+        else:
+            return result[0]['cookies']
     else:
         return None
 
@@ -64,70 +63,78 @@ async def parse(html):
 
 async def refreshCookies():
     links = link_db.all()
+    current_time = datetime.now(timezone.utc).timestamp()
+
     for link_detail in links:
         link = link_detail.get('url')
         proxy_info = link_detail.get('proxy', {})
-        max_retries = 5
-        retries = 0
-        driver = None
-        while retries < max_retries:
-            try:
-                prx = (
-                    proxy_info['host'], proxy_info['port'], proxy_info['username'], proxy_info['password'],
-                    proxy_info['dirname'])
-                proxy = ProxyAuthExtension(*prx)
-                options = ChromiumOptions().auto_port(True)
-                options.set_argument('--no-sandbox')
-                options.set_argument('--disable-crash-reporter')
-                options.set_argument("--window-size=1920,1080")
-                options.set_argument("--start-maximized")
-                options.add_extension(proxy.directory)
-                driver = ChromiumPage(options)
-                driver.timeout = 60
-                driver.get("http://nowsecure.nl/")
-                driver.wait.doc_loaded()
-                await asyncio.sleep(3)
-                driver.get(link)  # Use the actual link instead of hardcoded "https://dexscreener.com/"
-                driver.wait.doc_loaded()
-                result = driver.wait.eles_loaded("xpath:/html/body/div[1]/div/div[1]/div/div/iframe")
+        cookies_info = getcookies_of_proxy(proxy_info['host'], proxy_info['port'],
+                                           proxy_info['username'], proxy_info['password'], return_expiry_only=True)
 
-                if result:
-                    logging.info("Page is loaded, proceeding")
+        if cookies_info is None or (current_time - cookies_info > 1200):
+            max_retries = 5
+            retries = 0
+            driver = None
+            while retries < max_retries:
+                try:
+                    prx = (proxy_info['host'], proxy_info['port'], proxy_info['username'], proxy_info['password'],
+                           proxy_info['dirname'])
+                    proxy = ProxyAuthExtension(*prx)
+                    options = ChromiumOptions().auto_port(True)
+                    options.set_argument('--no-sandbox')
+                    options.set_argument('--disable-crash-reporter')
+                    options.set_argument("--window-size=1920,1080")
+                    options.set_argument("--start-maximized")
+                    options.add_extension(proxy.directory)
+                    driver = ChromiumPage(options)
+                    driver.timeout = 60
+                    driver.get("http://nowsecure.nl/")
+                    driver.wait.doc_loaded()
+                    await asyncio.sleep(3)
+                    driver.get(link)
+                    driver.wait.doc_loaded()
+                    result = driver.wait.eles_loaded("xpath:/html/body/div[1]/div/div[1]/div/div/iframe")
+
+                    if result:
+                        logging.info("Page is loaded, proceeding")
+                        await asyncio.sleep(1)
+                        bFrame = driver.get_frame(1)
+                        if bFrame:
+                            iframe = driver.get_frame(1, timeout=60)
+                            logging.info("Found the iframe, proceeding for click")
+                            iframe.ele('xpath:/html/body/div/div/div[1]/div/label/input', timeout=60).click()
+                            logging.info("Iframe clicked")
+                            driver.wait.ele_displayed("xpath:/html/body/div[1]/div/nav/div[1]", timeout=60)
+                            cookies = driver.cookies(as_dict=True)
+                            last_refreshed = datetime.now(timezone.utc).timestamp()
+                            async with cookies_dblock:
+                                ProxyQuery = Query()
+                                existing_entry = CookiesDB.search(ProxyQuery.proxy.host == proxy_info['host'])
+                                if existing_entry:
+                                    CookiesDB.update({'cookies': cookies, 'last_refreshed': last_refreshed},
+                                                     ProxyQuery.proxy.host == proxy_info['host'])
+                                else:
+                                    CookiesDB.insert(
+                                        {'proxy': proxy_info, 'cookies': cookies, 'last_refreshed': last_refreshed})
+                                logging.info(
+                                    f"Cookies refreshed for proxy {proxy_info['host']} at directory {proxy_info['dirname']}")
+                                logging.info(
+                                    f"Saved/Updated cookies and proxy details in the database with timestamp: {last_refreshed}")
+                        if driver:
+                            driver.quit()
+                        break
+                except Exception as e:
+                    logging.error(f"Error encountered: {e}. Retrying...")
+                    if driver:
+                        driver.quit(force=True)
+                    retries += 1
                     await asyncio.sleep(1)
-                    bFrame = driver.get_frame(1)
-                    if bFrame:
-                        iframe = driver.get_frame(1, timeout=60)
-                        logging.info("Found the iframe, proceeding for click")
-                        iframe.ele('xpath:/html/body/div/div/div[1]/div/label/input', timeout=60).click()
-                        logging.info("Iframe clicked")
-                        driver.wait.ele_displayed("xpath:/html/body/div[1]/div/nav/div[1]", timeout=60)
-                        cookies = driver.cookies(as_dict=True)
-                        timezone = pytz.timezone('UTC')
-                        last_refreshed = datetime.now(timezone).timestamp()
-                        async with cookies_dblock:
-                            ProxyQuery = Query()
-                            existing_entry = CookiesDB.search(ProxyQuery.proxy.host == proxy_info['host'])
-                            if existing_entry:
-                                CookiesDB.update({'cookies': cookies, 'last_refreshed': last_refreshed}, ProxyQuery.proxy.host == proxy_info['host'])
-                            else:
-                                CookiesDB.insert({'proxy': proxy_info, 'cookies': cookies, 'last_refreshed': last_refreshed})
-                            logging.info(f"Cookies refreshed for proxy {proxy_info['host']} at directory {proxy_info['dirname']}")
-                            logging.info(f"Saved/Updated cookies and proxy details in the database with timestamp: {last_refreshed}")
-                if driver:
-                    driver.quit()
-                break
-            except Exception as e:
-                logging.error(f"Error encountered: {e}. Retrying...")
-                if driver:
-                    driver.quit(force=True)
-                retries += 1
-                await asyncio.sleep(1)
 
 
 async def schedule_refresh_cookies(interval=1200):
     while True:
         await refreshCookies()
-        await asyncio.sleep(interval)
+        await asyncio.sleep(10)
 
 
 async def process_link(application, link, PairsDB):
@@ -175,7 +182,7 @@ async def process_link(application, link, PairsDB):
             except BaseException as e:
                 logging.error(f"Attempt {attempt + 1}: Request failed with error {e}")
 
-            await asyncio.sleep(2)
+            await asyncio.sleep(1)
 
         if success:
             current_pairs = await parse(response.text)
@@ -214,48 +221,59 @@ async def process_link(application, link, PairsDB):
         else:
             logging.error("All retry attempts failed. Moving to next task.")
 
-        await asyncio.sleep(3)
+        await asyncio.sleep(2)
 
 
 async def MeatofTheWork(application):
-    # Cold start here.
-    # while True:
-    #     print("a")
-    #     await asyncio.sleep(1)
-    # await refreshCookies()
-    # refresh_task = asyncio.create_task(schedule_refresh_cookies(interval=1200))
-    # tasks = [process_link(application, link, PairsDB) for link in config]
-    # await asyncio.gather(*tasks)
+    while True:
+        links_with_proxies = [link for link in link_db.all() if link.get('proxy')]
+        if links_with_proxies:
+            await refreshCookies()
+            refresh_task = asyncio.create_task(schedule_refresh_cookies(interval=1200))
+            break
+        else:
+            pass
+        await asyncio.sleep(1)
+
     tasks = {}
     try:
         while True:
             current_links = {link['url']: link for link in link_db.all()}
             for url, link in current_links.items():
-                if url not in tasks or tasks[url].done():
-                    tasks[url] = asyncio.create_task(process_link(application, link, PairsDB))
-                    print(f"Started task for {url}")
+                cookies_info = getcookies_of_proxy(link['proxy']['host'], link['proxy']['port'],link['proxy']['username'], link['proxy']['password'],return_expiry_only=True)
+                if cookies_info:
+                    current_time = time.time()
+                    if current_time - cookies_info <= 1800:
+                        if url not in tasks or tasks[url].done():
+                            try:
+                                tasks[url] = asyncio.create_task(process_link(application, link, PairsDB))
+                                print(f"Started task for {url}")
+                            except Exception as e:
+                                print(f"Failed to start task for {url}: {e}")
+                    else:
+                        print(f"Skipping task for {url} due to stale cookies.")
+                else:
+                    print(f"No valid cookies found for {url}, skipping task start.")
 
             for url in list(tasks.keys()):
                 if url not in current_links:
                     tasks[url].cancel()
-                    print(f"Cancelling task for {url} as it has gotten removed!")
+                    print(f"Cancelling task for {url} as it has been removed from the database.")
                     del tasks[url]
 
-            await asyncio.sleep(5)
+            await asyncio.sleep(2)
+
     except asyncio.CancelledError:
-        print("Manage links task cancelled")
-    finally:
-        for task in tasks.values():
-            task.cancel()
-        await asyncio.gather(*tasks.values(), return_exceptions=True)
+        print("Manage links task cancelled.")
 
 
 async def run_bot():
-    application = (Application.builder().token('7001922941:AAGgFLgcUup4hSrNWeQ3mrYofKnp72JPHeM').connect_timeout(
+    application = (Application.builder().token('7001922941:AAGgFLgcUup4hSrNWeQ3mrYofKnp72JPHeM').concurrent_updates(
+        True).connect_timeout(
         90).read_timeout(90).write_timeout(90).build())
-    application.add_handler(CommandHandler("add", commands.add))
-    application.add_handler(CommandHandler("delete", commands.delete))
-    application.add_handler(CommandHandler("list", commands.list_links))
+    application.add_handler(CommandHandler("add", add, block=False))
+    application.add_handler(CommandHandler("delete", delete, block=False))
+    application.add_handler(CommandHandler("list", list_links, block=False))
     await application.initialize()
     await application.start()
     await application.updater.start_polling()
@@ -264,4 +282,4 @@ async def run_bot():
 
 if __name__ == "__main__":
     setup_logging()
-    asyncio.run(run_bot())
+    asyncio.run(run_bot(), debug=True)
