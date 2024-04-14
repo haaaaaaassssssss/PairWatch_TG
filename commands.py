@@ -1,12 +1,10 @@
 import json
-
 from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes
+from telegram.ext import ContextTypes
 from tinydb import TinyDB, Query
-from main import dblock
+from resources import dblock, link_db
 from models import ValidateLink
 
-link_db = TinyDB('links.json')
 Link = Query()
 
 
@@ -14,7 +12,6 @@ async def add(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     async with dblock:
         args_str = ' '.join(context.args)
         if args_str.startswith('"'):
-            # Find the second quote index to isolate the title
             end_quote_index = args_str.find('"', 1)
             if end_quote_index == -1:
                 await update.message.reply_text('Invalid input. Make sure the title is enclosed in quotes.')
@@ -34,39 +31,32 @@ async def add(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
             with open('proxies.json', 'r') as f:
                 proxies = json.load(f)
-            available_proxies = [proxy for proxy in proxies['proxies'] if
-                                 not link_db.search(Link.proxy.host == proxy['host'])]
+            available_proxies = [proxy for proxy in proxies['proxies'] if not link_db.search(Link.proxy.host == proxy['host'])]
 
             if not available_proxies:
                 await update.message.reply_text('No available proxies to assign.')
                 return
 
             selected_proxy = available_proxies[0]
-            link_db.insert({'title': link.title, 'url': link.url, 'proxy': selected_proxy})  # Adding link with proxy
-            await update.message.reply_text(
-                f'Added link: "{link.title}" at {link.url} with proxy {selected_proxy["host"]}')
+            link_db.insert({'title': link.title, 'url': link.url, 'proxy': selected_proxy})
+            await update.message.reply_text(f'Added link: "{link.title}" at {link.url} with proxy {selected_proxy["host"]}')
         except Exception as e:
             await update.message.reply_text(str(e))
-        else:
-            await update.message.reply_text('Usage: /add "<title>" <link>')
 
 
 async def delete(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     async with dblock:
         if context.args:
-            title = ' '.join(context.args)  # Combine all arguments as the title
+            title = ' '.join(context.args)
 
-            # Search for the documents by title
             found_links = link_db.search(Query().title == title)
             if found_links:
-                # If multiple entries have the same title, all will be deleted
                 link_db.remove(Query().title == title)
                 await update.message.reply_text(f'Deleted links with title: "{title}"')
             else:
                 await update.message.reply_text(f'No links found with title: "{title}"')
         else:
             await update.message.reply_text('Usage: /delete <title>')
-
 
 
 async def list_links(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
