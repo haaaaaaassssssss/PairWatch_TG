@@ -1,4 +1,6 @@
 import json
+import logging
+
 from telegram import Update
 from telegram.ext import ContextTypes
 from tinydb import TinyDB, Query
@@ -45,6 +47,7 @@ async def add(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             selected_proxy = available_proxies[0]
             link_db.insert({'title': link.title, 'url': link.url, 'proxy': selected_proxy})
             await update.message.reply_text(f'Added link: "{link.title}" at {link.url} with proxy {selected_proxy["host"]}')
+            logging.info(f"Link added: {link.title} at {link.url} with proxy {selected_proxy['host']}")
         except Exception as e:
             await update.message.reply_text(str(e))
 
@@ -62,6 +65,7 @@ async def delete(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             if found_links:
                 link_db.remove(Query().title == title)
                 await update.message.reply_text(f'Deleted links with title: "{title}"')
+                logging.info(f"Deleted links with title: {title}")
             else:
                 await update.message.reply_text(f'No links found with title: "{title}"')
         else:
