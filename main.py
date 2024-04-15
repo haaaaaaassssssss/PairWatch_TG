@@ -185,7 +185,8 @@ async def process_link(application, link, PairsDB):
                             success = True
                             break
                         else:
-                            logging.error(f"Attempt {attempt + 1}: Failed to fetch data with status code {response.status_code}")
+                            logging.error(
+                                f"Attempt {attempt + 1}: Failed to fetch data with status code {response.status_code}")
                 except Exception as e:
                     logging.error(f"Attempt {attempt + 1}: Request failed with error {e}")
 
@@ -229,7 +230,8 @@ async def process_link(application, link, PairsDB):
                             f"{escape_markdown(pair_dict['price_changes'][2], version=2)} \\| {escape_markdown(pair_dict['price_changes'][3], version=2)}\n"
                             f"{token_pair_address}"
                         )
-                        await application.bot.send_message(chat_id='@pairpeekbot', text=message, parse_mode='MarkdownV2',
+                        await application.bot.send_message(chat_id='@pairpeekbot', text=message,
+                                                           parse_mode='MarkdownV2',
                                                            disable_web_page_preview=True)
 
             else:
@@ -265,14 +267,8 @@ async def MeatofTheWork(application):
 
             else:
                 print(f"No valid cookies found for {url}, skipping task start.")
-        for url in list(tasks.keys()):
-            if url not in current_links:
-                tasks[url].cancel()
-                print(f"Cancelling task for {url} as it has been removed from the database.")
-                del tasks[url]
 
         await asyncio.sleep(2)
-
 
 
 async def run_bot():
