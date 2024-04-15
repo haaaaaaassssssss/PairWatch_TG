@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import os
 import time
 from asyncio import WindowsSelectorEventLoopPolicy
 from concurrent.futures import ThreadPoolExecutor
@@ -19,7 +20,7 @@ from resources import dblock, cookies_dblock, CookiesDB, PairsDB, link_db
 from utils import setup_logging, convert_to_hashable
 
 
-# os.environ["PYTHONASYNCIODEBUG"] = "1"
+os.environ["PYTHONASYNCIODEBUG"] = "1"
 
 
 def getcookies_of_proxy(proxy_ip, proxy_port, proxy_user, proxy_password, return_expiry_only=False):
@@ -67,14 +68,24 @@ async def parse(html):
 
 def blocking_browser_interaction():
     while True:
-        links = link_db.all()
+
+        try:
+            links = link_db.all()
+            logging.info("Successfully retrieved links from the database.")
+        except Exception as e:
+            logging.error(f"Failed to retrieve links from the database: {str(e)}")
+            continue
+
         current_time = datetime.now(timezone.utc).timestamp()
 
         for link_detail in links:
             link = link_detail.get('url')
             proxy_info = link_detail.get('proxy', {})
+            logging.debug(f"Processing link: {link} with proxy info: {proxy_info}")
+
             cookies_info = getcookies_of_proxy(proxy_info['host'], proxy_info['port'],
                                                proxy_info['username'], proxy_info['password'], return_expiry_only=True)
+            logging.debug(f"Current cookies info for {link}: {cookies_info}")
 
             if cookies_info is None or (current_time - cookies_info > 1200):
                 prx = (proxy_info['host'], proxy_info['port'], proxy_info['username'], proxy_info['password'],
@@ -161,13 +172,10 @@ async def process_link(application, link, PairsDB):
         "https": f"http://{link['proxy']['username']}:{link['proxy']['password']}@{link['proxy']['host']}:{link['proxy']['port']}",
         "http": f"http://{link['proxy']['username']}:{link['proxy']['password']}@{link['proxy']['host']}:{link['proxy']['port']}"
     }
-
-    cooldown_seconds = 90  # Cooldown period in seconds
-
+    cooldown_seconds = 90
     try:
         while True:
             current_links = {link_details['url']: link_details for link_details in link_db.all()}
-
             if link['url'] not in current_links:
                 logging.info(f"Link {link['url']} is no longer in the database, stopping task.")
                 break
@@ -199,7 +207,6 @@ async def process_link(application, link, PairsDB):
                     stored_pairs_dict = PairsDB.get(q.url == link['url']) or {'pairs': []}
                     stored_pairs_keys = {convert_to_hashable(pair): pair for pair in stored_pairs_dict['pairs']}
                     current_pairs_keys = {convert_to_hashable(pair): pair for pair in current_pairs}
-
                     added_pairs_keys = set(current_pairs_keys.keys()) - set(stored_pairs_keys.keys())
                     removed_pairs_keys = set(stored_pairs_keys.keys()) - set(current_pairs_keys.keys())
                     PairsDB.upsert({'url': link['url'], 'pairs': list(current_pairs)}, q.url == link['url'])
@@ -233,7 +240,6 @@ async def process_link(application, link, PairsDB):
                         await application.bot.send_message(chat_id='@pairpeekbot', text=message,
                                                            parse_mode='MarkdownV2',
                                                            disable_web_page_preview=True)
-
             else:
                 logging.error("All retry attempts failed. Moving to next task.")
 
