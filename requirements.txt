@@ -1,0 +1,7 @@
+beautifulsoup4==4.10.0
+curl_cffi==0.6.2
+DrissionPage==4.0.4.21
+pydantic==2.7.0
+python-telegram-bot==21.1
+pytz==2024.1
+tinydb==4.8.0
