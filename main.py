@@ -5,22 +5,17 @@ import time
 from asyncio import WindowsSelectorEventLoopPolicy
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
-
 from DrissionPage import ChromiumOptions
 from DrissionPage import ChromiumPage
 from bs4 import BeautifulSoup
 from curl_cffi.requests import AsyncSession
 from telegram.ext import Application, CommandHandler
 from telegram.helpers import escape_markdown
-from tinydb import Query
-
+from tinydb import Query, TinyDB
 from commands import add, delete, list_links
 from extensions import ProxyAuthExtension
 from resources import dblock, cookies_dblock, CookiesDB, PairsDB, link_db
 from utils import setup_logging, convert_to_hashable
-
-
-os.environ["PYTHONASYNCIODEBUG"] = "1"
 
 
 def getcookies_of_proxy(proxy_ip, proxy_port, proxy_user, proxy_password, return_expiry_only=False):
@@ -68,8 +63,8 @@ async def parse(html):
 
 def blocking_browser_interaction():
     while True:
-
         try:
+            link_db = TinyDB('links.json')
             links = link_db.all()
             logging.info("Successfully retrieved links from the database.")
         except Exception as e:
@@ -108,6 +103,7 @@ def blocking_browser_interaction():
                         time.sleep(1)
                         iframe = driver.get_frame(1, timeout=60)
                         if iframe:
+                            time.sleep(2)
                             iframe.ele('xpath:/html/body/div/div/div[1]/div/label/input', timeout=60).click()
                             time.sleep(2)
                             driver.wait.ele_displayed("xpath:/html/body/div[1]/div/nav/div[1]", timeout=60)
@@ -127,7 +123,7 @@ def blocking_browser_interaction():
                                 if driver:
                                     driver.quit()
                 except Exception as e:
-                    print(f"Error during browsing: {e}")
+                    logging.info(f"Error during browsing: {e}")
                 finally:
                     if driver:
                         driver.quit()
@@ -145,13 +141,15 @@ async def run_in_executor():
 
 
 async def process_link(application, link, PairsDB):
+    ldb = TinyDB('links.json')
     removal_timestamps = {}
     max_retries = 6
     headers = {
         'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
         'accept-language': 'en-GB,en-US;q=0.9,en;q=0.8',
         'cache-control': 'max-age=0',
-        'if-modified-since': 'Sun, 14 Apr 2024 17:15:39 GMT',
+        'content-type': 'application/x-www-form-urlencoded',
+        'origin': 'https://dexscreener.com',
         'sec-ch-ua': '"Google Chrome";v="123", "Not:A-Brand";v="8", "Chromium";v="123"',
         'sec-ch-ua-arch': '"x86"',
         'sec-ch-ua-bitness': '"64"',
@@ -163,7 +161,7 @@ async def process_link(application, link, PairsDB):
         'sec-ch-ua-platform-version': '"12.0.0"',
         'sec-fetch-dest': 'document',
         'sec-fetch-mode': 'navigate',
-        'sec-fetch-site': 'none',
+        'sec-fetch-site': 'same-origin',
         'sec-fetch-user': '?1',
         'upgrade-insecure-requests': '1',
         'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
@@ -175,7 +173,7 @@ async def process_link(application, link, PairsDB):
     cooldown_seconds = 90
     try:
         while True:
-            current_links = {link_details['url']: link_details for link_details in link_db.all()}
+            current_links = {link_details['url']: link_details for link_details in ldb.all()}
             if link['url'] not in current_links:
                 logging.info(f"Link {link['url']} is no longer in the database, stopping task.")
                 break
@@ -187,21 +185,25 @@ async def process_link(application, link, PairsDB):
             success = False
             for attempt in range(max_retries):
                 try:
-                    async with AsyncSession(impersonate="chrome") as s:
+                    async with AsyncSession(impersonate="chrome120") as s:
+                        logging.info(f"Scraping {link['title']}")
                         response = await s.get(link['url'], headers=headers, proxies=proxies, cookies=cookies)
                         if response.status_code == 200:
                             success = True
                             break
                         else:
                             logging.error(
-                                f"Attempt {attempt + 1}: Failed to fetch data with status code {response.status_code}")
+                                f"Attempt {attempt + 1}: Failed to fetch data for {link['title']} with status code {response.status_code}")
                 except Exception as e:
-                    logging.error(f"Attempt {attempt + 1}: Request failed with error {e}")
+                    logging.error(f"Attempt {attempt + 1}: Request failed with error {e} for {link['title']}")
 
-                await asyncio.sleep(1)
+                await asyncio.sleep(0.5)
 
             if success:
                 current_pairs = await parse(response.text)
+                if not current_pairs:
+                    logging.info(f"No pairs found during parsing {link['title']}.")
+                    return
                 async with dblock:
                     q = Query()
                     stored_pairs_dict = PairsDB.get(q.url == link['url']) or {'pairs': []}
@@ -213,7 +215,7 @@ async def process_link(application, link, PairsDB):
 
                     current_time = time.time()
                     for key in removed_pairs_keys:
-                        logging.info(f"Pair removed: {stored_pairs_keys[key]}")
+                        logging.info(f"Pair removed: {stored_pairs_keys[key]} from {link['title']}")
                         removal_timestamps[key] = current_time
 
                     for key in added_pairs_keys:
@@ -222,7 +224,7 @@ async def process_link(application, link, PairsDB):
                             if time_since_removal < cooldown_seconds:
                                 continue
 
-                        logging.info(f"New pair added: {current_pairs_keys[key]}")
+                        logging.info(f"New pair added: {current_pairs_keys[key]} to {link['title']}")
                         pair = current_pairs_keys[key]
                         pair_dict = dict(pair)
                         token_pair_address = pair_dict['link'].split('/')[-1]
@@ -240,10 +242,13 @@ async def process_link(application, link, PairsDB):
                         await application.bot.send_message(chat_id='@pairpeekbot', text=message,
                                                            parse_mode='MarkdownV2',
                                                            disable_web_page_preview=True)
+
+                    if not added_pairs_keys and not removed_pairs_keys:
+                        logging.info("No new pairs added or removed.")
             else:
                 logging.error("All retry attempts failed. Moving to next task.")
 
-            await asyncio.sleep(2)
+            await asyncio.sleep(0.5)
     except asyncio.CancelledError:
         logging.error("Task was cancelled during execution")
     except Exception as e:
@@ -254,27 +259,34 @@ async def MeatofTheWork(application):
     refresh = asyncio.create_task(refreshCookies())
     tasks = {}
     while True:
-        current_links = {link['url']: link for link in link_db.all()}
+        ldb = TinyDB('links.json')
+        current_links = {link['url']: link for link in ldb.all()}
         for url, link in current_links.items():
             cookies_info = getcookies_of_proxy(link['proxy']['host'], link['proxy']['port'],
                                                link['proxy']['username'], link['proxy']['password'],
                                                return_expiry_only=True)
+            logging.debug(f"Current URLS are {current_links}")
             if cookies_info:
                 current_time = time.time()
                 if current_time - cookies_info <= 1800:
                     if url not in tasks or tasks[url].done():
                         try:
                             tasks[url] = asyncio.create_task(process_link(application, link, PairsDB))
-                            print(f"Started task for {url}")
+                            logging.info(f"Started task for {url}")
                         except Exception as e:
-                            print(f"Failed to start task for {url}: {e}")
+                            logging.info(f"Failed to start task for {url}: {e}")
                 else:
-                    print(f"Skipping task for {url} due to stale cookies.")
+                    logging.info(f"Skipping task for {url} due to stale cookies.")
 
             else:
-                print(f"No valid cookies found for {url}, skipping task start.")
+                logging.info(f"No valid cookies found for {url}, skipping task start.")
 
-        await asyncio.sleep(2)
+        for url in list(tasks.keys()):
+            if url not in current_links:
+                tasks[url].cancel()
+                logging.info(f"Cancelling task for {url} as it has been removed from the database.")
+                del tasks[url]
+        await asyncio.sleep(0.5)
 
 
 async def run_bot():
