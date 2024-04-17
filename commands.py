@@ -7,11 +7,14 @@ from tinydb import TinyDB, Query
 from resources import dblock, link_db
 from models import ValidateLink
 
-Link = Query()
+WHITELISTED_USERS = ['belgxz', 'roidv']
 
-WHITELISTED_USERS = ['belgxz','roidv']
+with open('proxies.json', 'r') as f:
+    proxies = json.load(f)
+
 
 async def add(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    Link = Query()
     user_id = update.message.from_user.username
     if user_id not in WHITELISTED_USERS:
         await update.message.reply_text('You are not authorized to use this command.')
@@ -36,9 +39,8 @@ async def add(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 await update.message.reply_text(f'Link already exists at: {link.url}')
                 return
 
-            with open('proxies.json', 'r') as f:
-                proxies = json.load(f)
-            available_proxies = [proxy for proxy in proxies['proxies'] if not link_db.search(Link.proxy.host == proxy['host'])]
+            available_proxies = [proxy for proxy in proxies['proxies'] if
+                                 not link_db.search(Link.proxy.host == proxy['host'])]
 
             if not available_proxies:
                 await update.message.reply_text('No available proxies to assign.')
@@ -46,13 +48,16 @@ async def add(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
             selected_proxy = available_proxies[0]
             link_db.insert({'title': link.title, 'url': link.url, 'proxy': selected_proxy})
-            await update.message.reply_text(f'Added link: "{link.title}" at {link.url} with proxy {selected_proxy["host"]}')
+            await update.message.reply_text(
+                f'Added link: "{link.title}" at {link.url} with proxy {selected_proxy["host"]}')
             logging.info(f"Link added: {link.title} at {link.url} with proxy {selected_proxy['host']}")
         except Exception as e:
             await update.message.reply_text(str(e))
 
 
 async def delete(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    DB = Query()
+
     user_id = update.message.from_user.username
     if user_id not in WHITELISTED_USERS:
         await update.message.reply_text('You are not authorized to use this command.')
@@ -60,10 +65,9 @@ async def delete(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     async with dblock:
         if context.args:
             title = ' '.join(context.args)
-
-            found_links = link_db.search(Query().title == title)
+            found_links = link_db.search(DB.title == title)
             if found_links:
-                link_db.remove(Query().title == title)
+                link_db.remove(DB.title == title)
                 await update.message.reply_text(f'Deleted links with title: "{title}"')
                 logging.info(f"Deleted links with title: {title}")
             else:
