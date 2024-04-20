@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import threading
 import time
 from asyncio import WindowsSelectorEventLoopPolicy
 from concurrent.futures import ThreadPoolExecutor
@@ -18,22 +19,27 @@ from resources import dblock, cookies_dblock, CookiesDB, PairsDB, link_db
 from utils import setup_logging, convert_to_hashable
 
 
-def getcookies_of_proxy(proxy_ip, proxy_port, proxy_user, proxy_password, return_expiry_only=False):
-    Q = Query()
-    result = CookiesDB.search(
-        (Q.proxy.host == proxy_ip) &
-        (Q.proxy.port == proxy_port) &
-        (Q.proxy.username == proxy_user) &
-        (Q.proxy.password == proxy_password)
-    )
+cookielock = threading.Lock()
 
-    if result:
-        if return_expiry_only:
-            return result[0]['last_refreshed']
+def getcookies_of_proxy(proxy_ip, proxy_port, proxy_user, proxy_password, return_expiry_only=False):
+    with cookielock:
+        Q = Query()
+        cdb = TinyDB('cookies.json')
+
+        result = cdb.search(
+            (Q.proxy.host == proxy_ip) &
+            (Q.proxy.port == proxy_port) &
+            (Q.proxy.username == proxy_user) &
+            (Q.proxy.password == proxy_password)
+        )
+
+        if result:
+            if return_expiry_only:
+                return result[0]['last_refreshed']
+            else:
+                return result[0]['cookies']
         else:
-            return result[0]['cookies']
-    else:
-        return None
+            return None
 
 
 async def parse(html):
@@ -76,28 +82,28 @@ def blocking_browser_interaction():
         for link_detail in links:
             link = link_detail.get('url')
             proxy_info = link_detail.get('proxy', {})
-            logging.debug(f"Processing link: {link} with proxy info: {proxy_info}")
-
-            cookies_info = getcookies_of_proxy(proxy_info['host'], proxy_info['port'],
-                                               proxy_info['username'], proxy_info['password'], return_expiry_only=True)
-            logging.debug(f"Current cookies info for {link}: {cookies_info}")
-
+            logging.info(f"Processing link: {link} with proxy info: {proxy_info}")
+            cookies_info = getcookies_of_proxy(proxy_info['host'], proxy_info['port'],proxy_info['username'], proxy_info['password'], return_expiry_only=True)
+            logging.info(f"Current cookies info for {link}: {cookies_info}")
             if cookies_info is None or (current_time - cookies_info > 1200):
-                prx = (proxy_info['host'], proxy_info['port'], proxy_info['username'], proxy_info['password'],
-                       proxy_info['dirname'])
+                prx = (proxy_info['host'], proxy_info['port'], proxy_info['username'], proxy_info['password'],proxy_info['dirname'])
                 proxy = ProxyAuthExtension(*prx)
                 options = ChromiumOptions().auto_port(True)
                 options.set_argument('--no-sandbox')
                 options.set_argument('--disable-crash-reporter')
                 options.set_argument("--window-size=1920,1080")
                 options.set_argument("--start-maximized")
+                options.set_argument("--disable-gpu")
                 options.add_extension(proxy.directory)
                 driver = ChromiumPage(options)
                 try:
+                    logging.info(f"Starting driver")
                     driver.timeout = 60
                     driver.get("http://nowsecure.nl/")
+                    logging.info(f'Visited nowsecure.nl ')
                     time.sleep(3)
                     driver.get(link)
+                    logging.info(f"Visited the link")
                     result = driver.wait.eles_loaded("xpath:/html/body/div[1]/div/div[1]/div/div/iframe")
                     if result:
                         time.sleep(1)
@@ -107,26 +113,29 @@ def blocking_browser_interaction():
                             iframe.ele('xpath:/html/body/div/div/div[1]/div/label/input', timeout=60).click()
                             time.sleep(2)
                             driver.wait.ele_displayed("xpath:/html/body/div[1]/div/nav/div[1]", timeout=60)
-
                             cookies = driver.cookies(as_dict=True)
                             last_refreshed = datetime.now(timezone.utc).timestamp()
                             ProxyQuery = Query()
-                            existing_entry = CookiesDB.search(ProxyQuery.proxy.host == proxy_info['host'])
+                            logging.info(f"About to save cookies.")
+                            with cookielock:
+                                cookiedb = TinyDB('cookies.json')
+                            existing_entry = cookiedb.search(ProxyQuery.proxy.host == proxy_info['host'])
                             if existing_entry:
-                                CookiesDB.update({'cookies': cookies, 'last_refreshed': last_refreshed},
+                                cookiedb.update({'cookies': cookies, 'last_refreshed': last_refreshed},
                                                  ProxyQuery.proxy.host == proxy_info['host'])
+                                logging.info(f"Cookies updated")
                                 if driver:
-                                    driver.quit()
+                                    driver.quit(force=True)
                             else:
-                                CookiesDB.insert(
+                                cookiedb.insert(
                                     {'proxy': proxy_info, 'cookies': cookies, 'last_refreshed': last_refreshed})
                                 if driver:
-                                    driver.quit()
+                                    driver.quit(force=True)
                 except Exception as e:
-                    logging.info(f"Error during browsing: {e}")
+                    logging.info(f"Error during browsing: {e} ")
                 finally:
                     if driver:
-                        driver.quit()
+                        driver.quit(force=True)
         time.sleep(3)
 
 
@@ -168,6 +177,7 @@ async def process_link(application, link, PairsDB):
         'upgrade-insecure-requests': '1',
         'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
     }
+
     proxies = {
         "https": f"http://{link['proxy']['username']}:{link['proxy']['password']}@{link['proxy']['host']}:{link['proxy']['port']}",
         "http": f"http://{link['proxy']['username']}:{link['proxy']['password']}@{link['proxy']['host']}:{link['proxy']['port']}"
@@ -214,7 +224,6 @@ async def process_link(application, link, PairsDB):
                     added_pairs_keys = set(current_pairs_keys.keys()) - set(stored_pairs_keys.keys())
                     removed_pairs_keys = set(stored_pairs_keys.keys()) - set(current_pairs_keys.keys())
                     PairsDB.upsert({'url': link['url'], 'pairs': list(current_pairs)}, q.url == link['url'])
-
                     current_time = time.time()
                     for key in removed_pairs_keys:
                         logging.info(f"Pair removed: {stored_pairs_keys[key]} from {link['title']}")
@@ -264,9 +273,7 @@ async def MeatofTheWork(application):
         ldb = TinyDB('links.json')
         current_links = {link['url']: link for link in ldb.all()}
         for url, link in current_links.items():
-            cookies_info = getcookies_of_proxy(link['proxy']['host'], link['proxy']['port'],
-                                               link['proxy']['username'], link['proxy']['password'],
-                                               return_expiry_only=True)
+            cookies_info = getcookies_of_proxy(link['proxy']['host'], link['proxy']['port'],link['proxy']['username'], link['proxy']['password'],return_expiry_only=True)
             logging.debug(f"Current URLS are {current_links}")
             if cookies_info:
                 current_time = time.time()
@@ -281,14 +288,15 @@ async def MeatofTheWork(application):
                     logging.info(f"Skipping task for {url} due to stale cookies.")
 
             else:
-                logging.info(f"No valid cookies found for {url}, skipping task start.")
+                logging.info(f"No valid cookies found for {link['title']}, skipping task start.")
+            await asyncio.sleep(1)
 
         for url in list(tasks.keys()):
             if url not in current_links:
                 tasks[url].cancel()
                 logging.info(f"Cancelling task for {url} as it has been removed from the database.")
                 del tasks[url]
-        await asyncio.sleep(0.5)
+        await asyncio.sleep(1)
 
 
 async def run_bot():
