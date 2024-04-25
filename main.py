@@ -1,306 +1,348 @@
 import asyncio
+import base64
+import json
 import logging
 import os
-import threading
+import random
+import traceback
 import time
+import urllib
 from asyncio import WindowsSelectorEventLoopPolicy
-from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timezone
-from DrissionPage import ChromiumOptions
-from DrissionPage import ChromiumPage
-from bs4 import BeautifulSoup
-from curl_cffi.requests import AsyncSession
+from datetime import datetime
+import websockets
 from telegram.ext import Application, CommandHandler
 from telegram.helpers import escape_markdown
-from tinydb import Query, TinyDB
-from commands import add, delete, list_links
-from extensions import ProxyAuthExtension
-from resources import dblock, cookies_dblock, CookiesDB, PairsDB, link_db
+from commands import add, delete, list_links, get_redis
 from utils import setup_logging, convert_to_hashable
+from urllib.parse import urlparse
+from websockets_proxy import Proxy, proxy_connect
+
+# os.environ["PYTHONASYNCIODEBUG"] = "1"
+
+prod_chat = '@pairpeekbot'
+test_chat = '@pairpeektest'
+telegram_bot_logger = logging.getLogger('telegram')
+telegram_bot_logger.setLevel(logging.WARNING + 1)
 
 
-cookielock = threading.Lock()
+def format_age(timestamp_str):
+    timestamp = datetime.strptime(timestamp_str, '%Y-%m-%d %H:%M:%S')
+    now = datetime.utcnow()
+    delta = now - timestamp
+    total_seconds = int(delta.total_seconds())
+    hours = total_seconds // 3600
+    minutes = (total_seconds % 3600) // 60
+    seconds = total_seconds % 60
+    if hours > 0:
+        return f"{hours}h {minutes}m"
+    elif minutes > 0:
+        return f"{minutes}m"
+    else:
+        return f"{seconds}s"
 
-def getcookies_of_proxy(proxy_ip, proxy_port, proxy_user, proxy_password, return_expiry_only=False):
-    with cookielock:
-        Q = Query()
-        cdb = TinyDB('cookies.json')
 
-        result = cdb.search(
-            (Q.proxy.host == proxy_ip) &
-            (Q.proxy.port == proxy_port) &
-            (Q.proxy.username == proxy_user) &
-            (Q.proxy.password == proxy_password)
-        )
+async def parse(json_data):
+    try:
+        pairs = json_data.get("pairs", [])
+        parsed_pairs = []
 
-        if result:
-            if return_expiry_only:
-                return result[0]['last_refreshed']
-            else:
-                return result[0]['cookies']
+        for pair in pairs:
+            try:
+                base_token = pair.get("baseToken", {})
+                token_name = base_token.get("name", "")
+                pair_address = pair.get("pairAddress", "")
+                link = f"https://dexscreener.com/solana/{pair_address}"
+                created_at = pair.get("pairCreatedAt", 0)
+                age = datetime.utcfromtimestamp(created_at / 1000).strftime(
+                    '%Y-%m-%d %H:%M:%S') if created_at else "N/A"
+                makers = pair.get("makers", {}).get("h24", 0)
+                volume = pair.get("volume", {}).get("h24", 0.0)
+                fdv = pair.get("marketCap", 0)
+                price_changes = [pair.get("priceChange", {}).get(interval, 0) for interval in ['m5', 'h1', 'h6', 'h24']]
+
+                parsed_pair = {
+                    "token_name": token_name,
+                    "link": link,
+                    "age": age,
+                    "makers": makers,
+                    "volume": volume,
+                    "fdv": fdv,
+                    "price_changes": price_changes
+                }
+                parsed_pairs.append(parsed_pair)
+            except Exception as e:
+                logging.debug(f"Error processing pair: {e}")
+
+        return parsed_pairs
+    except Exception as e:
+        # print(f"Error parsing JSON data: {e}  {json_data}")
+        return []
+
+
+def http_to_websocket(http_url):
+    parsed_url = urllib.parse.urlparse(http_url)
+    query_params = urllib.parse.parse_qs(parsed_url.query)
+
+    websocket_base = "wss://io.dexscreener.com/dex/screener/pairs/h24/1?"
+
+    conversion_map = {
+        'chainIds': ('filters', 'chainIds', 0),
+        'dexIds': ('filters', 'dexIds', 0),
+        'minLiq': ('filters', 'liquidity', 'min'),
+        'maxLiq': ('filters', 'liquidity', 'max'),
+        'minFdv': ('filters', 'marketCap', 'min'),
+        'maxFdv': ('filters', 'marketCap', 'max'),
+        'minAge': ('filters', 'pairAge', 'min'),
+        'maxAge': ('filters', 'pairAge', 'max'),
+        'min24HTxns': ('filters', 'txns', 'h24', 'min'),
+        'max24HTxns': ('filters', 'txns', 'h24', 'max'),
+        'min6HTxns': ('filters', 'txns', 'h6', 'min'),
+        'max6HTxns': ('filters', 'txns', 'h6', 'max'),
+        'min1HTxns': ('filters', 'txns', 'h1', 'min'),
+        'max1HTxns': ('filters', 'txns', 'h1', 'max'),
+        'min5MTxns': ('filters', 'txns', 'm5', 'min'),
+        'max5MTxns': ('filters', 'txns', 'm5', 'max'),
+        'min24HBuys': ('filters', 'buys', 'h24', 'min'),
+        'max24HBuys': ('filters', 'buys', 'h24', 'max'),
+        'min6HBuys': ('filters', 'buys', 'h6', 'min'),
+        'max6HBuys': ('filters', 'buys', 'h6', 'max'),
+        'min1HBuys': ('filters', 'buys', 'h1', 'min'),
+        'max1HBuys': ('filters', 'buys', 'h1', 'max'),
+        'min5MBuys': ('filters', 'buys', 'm5', 'min'),
+        'max5MBuys': ('filters', 'buys', 'm5', 'max'),
+        'min24HSells': ('filters', 'sells', 'h24', 'min'),
+        'max24HSells': ('filters', 'sells', 'h24', 'max'),
+        'min6HSells': ('filters', 'sells', 'h6', 'min'),
+        'max6HSells': ('filters', 'sells', 'h6', 'max'),
+        'min1HSells': ('filters', 'sells', 'h1', 'min'),
+        'max1HSells': ('filters', 'sells', 'h1', 'max'),
+        'min5MSells': ('filters', 'sells', 'm5', 'min'),
+        'max5MSells': ('filters', 'sells', 'm5', 'max'),
+        'min24HVol': ('filters', 'volume', 'h24', 'min'),
+        'max24HVol': ('filters', 'volume', 'h24', 'max'),
+        'min6HVol': ('filters', 'volume', 'h6', 'min'),
+        'max6HVol': ('filters', 'volume', 'h6', 'max'),
+        'min1HVol': ('filters', 'volume', 'h1', 'min'),
+        'max1HVol': ('filters', 'volume', 'h1', 'max'),
+        'min5MVol': ('filters', 'volume', 'm5', 'min'),
+        'max5MVol': ('filters', 'volume', 'm5', 'max'),
+        'min24HChg': ('filters', 'priceChange', 'h24', 'min'),
+        'max24HChg': ('filters', 'priceChange', 'h24', 'max'),
+        'min6HChg': ('filters', 'priceChange', 'h6', 'min'),
+        'max6HChg': ('filters', 'priceChange', 'h6', 'max'),
+        'min1HChg': ('filters', 'priceChange', 'h1', 'min'),
+        'max1HChg': ('filters', 'priceChange', 'h1', 'max'),
+        'min5MChg': ('filters', 'priceChange', 'm5', 'min'),
+        'max5MChg': ('filters', 'priceChange', 'm5', 'max')
+    }
+    ws_params = {'rankBy': {'key': 'pairAge', 'order': query_params.get('order', ['asc'])[0]}, 'filters': {}}
+
+    for http_param, ws_keys in conversion_map.items():
+        value = query_params.get(http_param)
+        if value:
+            current_dict = ws_params
+            for key in ws_keys[:-1]:
+                if isinstance(key, int):
+                    current_dict = current_dict.setdefault(ws_keys[-2], [None] * (key + 1))
+                else:
+                    current_dict = current_dict.setdefault(key, {})
+            current_dict[ws_keys[-1]] = value[0]
+
+    def build_query(prefix, item):
+        if isinstance(item, dict):
+            return "&".join(build_query(f"{prefix}[{k}]", v) for k, v in item.items())
+        elif isinstance(item, list):
+            return "&".join(
+                f"{prefix}[{index}]={urllib.parse.quote(str(v), safe='/:')}" for index, v in enumerate(item) if
+                v is not None)
         else:
-            return None
+            return f"{prefix}={urllib.parse.quote(str(item), safe='/:')}"
+
+    ws_query = build_query('rankBy', ws_params['rankBy']) + '&' + build_query('filters', ws_params['filters'])
+    return websocket_base + ws_query
 
 
-async def parse(html):
-    souped = BeautifulSoup(html, 'html.parser')
-    rows = souped.find_all(class_="ds-dex-table-row ds-dex-table-row-new")
-    pairs = []
-    for row in rows:
-        token_name = row.find(class_="ds-dex-table-row-base-token-name").text
-        link = "https://dexscreener.com" + row.get('href')
-        age = row.find(class_="ds-dex-table-row-col-pair-age").text.strip()
-        makers = row.find_all(class_="ds-table-data-cell")[6].text.strip()
-        volume = row.find_all(class_="ds-table-data-cell")[5].text.strip()
-        fdv = row.find_all(class_="ds-table-data-cell")[-1].text.strip()
-        price_changes = [change.text.strip() for change in row.find_all(class_="ds-dex-table-row-col-price-change")]
-        pair = {
-            "token_name": token_name,
-            "link": link,
-            "age": age,
-            "makers": makers,
-            "volume": volume,
-            "fdv": fdv,
-            "price_changes": price_changes
-        }
-        pairs.append(pair)
-    return pairs
+# async def keep_connection_alive(websocket):
+#     try:
+#         while True:
+#             await websocket.ping()
+#             await asyncio.sleep(5)
+#     except websockets.exceptions.ConnectionClosed:
+#         logging.error("Connection closed while trying to send ping")
+#         return
 
+def generate_sec_websocket_key():
+    random_bytes = os.urandom(16)
+    key = base64.b64encode(random_bytes).decode('utf-8')
+    return key
 
-def blocking_browser_interaction():
+async def fetch_links():
     while True:
-        try:
-            link_db = TinyDB('links.json')
-            links = link_db.all()
-            logging.info("Successfully retrieved links from the database.")
-        except Exception as e:
-            logging.error(f"Failed to retrieve links from the database: {str(e)}")
-            continue
+        await asyncio.sleep(1)
+        redis = await get_redis()
+        keys = await redis.keys('link:*')
+        current_links = {}
+        for key in keys:
+            url = await redis.hget(key, 'url')
+            if url is not None:
+                link_data = await redis.hgetall(key)
+                current_links[url] = link_data
+        return current_links
 
-        current_time = datetime.now(timezone.utc).timestamp()
-
-        for link_detail in links:
-            link = link_detail.get('url')
-            proxy_info = link_detail.get('proxy', {})
-            logging.info(f"Processing link: {link} with proxy info: {proxy_info}")
-            cookies_info = getcookies_of_proxy(proxy_info['host'], proxy_info['port'],proxy_info['username'], proxy_info['password'], return_expiry_only=True)
-            logging.info(f"Current cookies info for {link}: {cookies_info}")
-            if cookies_info is None or (current_time - cookies_info > 1200):
-                prx = (proxy_info['host'], proxy_info['port'], proxy_info['username'], proxy_info['password'],proxy_info['dirname'])
-                proxy = ProxyAuthExtension(*prx)
-                options = ChromiumOptions().auto_port(True)
-                options.set_argument('--no-sandbox')
-                options.set_argument('--disable-crash-reporter')
-                options.set_argument("--window-size=1920,1080")
-                options.set_argument("--start-maximized")
-                options.set_argument("--disable-gpu")
-                options.add_extension(proxy.directory)
-                driver = ChromiumPage(options)
-                try:
-                    logging.info(f"Starting driver")
-                    driver.timeout = 60
-                    driver.get("http://nowsecure.nl/")
-                    logging.info(f'Visited nowsecure.nl ')
-                    time.sleep(3)
-                    driver.get(link)
-                    logging.info(f"Visited the link")
-                    result = driver.wait.eles_loaded("xpath:/html/body/div[1]/div/div[1]/div/div/iframe")
-                    if result:
-                        time.sleep(1)
-                        iframe = driver.get_frame(1, timeout=60)
-                        if iframe:
-                            time.sleep(2)
-                            iframe.ele('xpath:/html/body/div/div/div[1]/div/label/input', timeout=60).click()
-                            time.sleep(2)
-                            driver.wait.ele_displayed("xpath:/html/body/div[1]/div/nav/div[1]", timeout=60)
-                            cookies = driver.cookies(as_dict=True)
-                            last_refreshed = datetime.now(timezone.utc).timestamp()
-                            ProxyQuery = Query()
-                            logging.info(f"About to save cookies.")
-                            with cookielock:
-                                cookiedb = TinyDB('cookies.json')
-                            existing_entry = cookiedb.search(ProxyQuery.proxy.host == proxy_info['host'])
-                            if existing_entry:
-                                cookiedb.update({'cookies': cookies, 'last_refreshed': last_refreshed},
-                                                 ProxyQuery.proxy.host == proxy_info['host'])
-                                logging.info(f"Cookies updated")
-                                if driver:
-                                    driver.quit(force=True)
-                            else:
-                                cookiedb.insert(
-                                    {'proxy': proxy_info, 'cookies': cookies, 'last_refreshed': last_refreshed})
-                                if driver:
-                                    driver.quit(force=True)
-                except Exception as e:
-                    logging.info(f"Error during browsing: {e} ")
-                finally:
-                    if driver:
-                        driver.quit(force=True)
-        time.sleep(3)
-
-
-async def refreshCookies():
-    await run_in_executor()
-
-
-async def run_in_executor():
-    loop = asyncio.get_running_loop()
-    with ThreadPoolExecutor() as executor:
-        await loop.run_in_executor(executor, blocking_browser_interaction)
-
-
-async def process_link(application, link, PairsDB):
-    ldb = TinyDB('links.json')
+async def process_link(application, link):
     removal_timestamps = {}
-    max_retries = 6
-    headers = {
-        'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
-        'accept-language': 'en-GB,en-US;q=0.9,en;q=0.8',
-        'cache-control': 'max-age=0',
-        'content-type': 'application/x-www-form-urlencoded',
-        'origin': 'https://dexscreener.com',
-        'priority': 'u=0, i',
-        'referer': f'{link["url"]}',
-        'sec-ch-ua': '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
-        'sec-ch-ua-arch': '"x86"',
-        'sec-ch-ua-bitness': '"64"',
-        'sec-ch-ua-full-version': '"124.0.6367.60"',
-        'sec-ch-ua-full-version-list': '"Chromium";v="124.0.6367.60", "Google Chrome";v="124.0.6367.60", "Not-A.Brand";v="99.0.0.0"',
-        'sec-ch-ua-mobile': '?0',
-        'sec-ch-ua-model': '""',
-        'sec-ch-ua-platform': '"Windows"',
-        'sec-ch-ua-platform-version': '"12.0.0"',
-        'sec-fetch-dest': 'document',
-        'sec-fetch-mode': 'navigate',
-        'sec-fetch-site': 'same-origin',
-        'sec-fetch-user': '?1',
-        'upgrade-insecure-requests': '1',
-        'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-    }
+    redis = await get_redis()
 
-    proxies = {
-        "https": f"http://{link['proxy']['username']}:{link['proxy']['password']}@{link['proxy']['host']}:{link['proxy']['port']}",
-        "http": f"http://{link['proxy']['username']}:{link['proxy']['password']}@{link['proxy']['host']}:{link['proxy']['port']}"
-    }
-    cooldown_seconds = 90
+    cooldown_seconds = 300
     try:
         while True:
-            current_links = {link_details['url']: link_details for link_details in ldb.all()}
-            if link['url'] not in current_links:
-                logging.info(f"Link {link['url']} is no longer in the database, stopping task.")
-                break
+            # proxies = {
+            #     "https": f"http://{link['proxy']['username']}:{link['proxy']['password']}@{link['proxy']['host']}:{link['proxy']['port']}",
+            #     "http": f"http://{link['proxy']['username']}:{link['proxy']['password']}@{link['proxy']['host']}:{link['proxy']['port']}"
+            # }
+            headers = {
+                'Pragma': 'no-cache',
+                'Origin': 'https://dexscreener.com',
+                'Accept-Language': 'en-US,en;q=0.9,fr;q=0.8',
+                'Sec-WebSocket-Key': f'{generate_sec_websocket_key()}',
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
+                'Upgrade': 'websocket',
+                'Cache-Control': 'no-cache',
+                'Connection': 'Upgrade',
+                'Sec-WebSocket-Version': '13',
+                'Sec-WebSocket-Extensions': 'permessage-deflate; client_max_window_bits'
+            }
 
-            async with cookies_dblock:
-                cookies = getcookies_of_proxy(link['proxy']['host'], link['proxy']['port'], link['proxy']['username'],
-                                              link['proxy']['password'])
+            try:
+                url = http_to_websocket(link['url'])
+                # print(f"going with url {url}")
+                proxy = Proxy.from_url(f"http://{link['username']}:{link['password']}@{link['host']}:{link['port']}")
+                link_fetch_task = asyncio.create_task(fetch_links())
 
-            success = False
-            for attempt in range(max_retries):
-                try:
-                    async with AsyncSession(impersonate="chrome120") as s:
-                        logging.info(f"Scraping {link['title']}")
-                        response = await s.get(link['url'], headers=headers, proxies=proxies, cookies=cookies)
-                        if response.status_code == 200:
-                            success = True
+                async with proxy_connect(url, extra_headers=headers, open_timeout=54,ping_interval=None, ping_timeout=None, proxy=proxy,) as websocket:
+                    current_links = await link_fetch_task
+                    logging.info(f"Scraping {link['title']}")
+                    while True:
+                        if link['url'] not in current_links:
+                            logging.info(f"Link {link['title']} is no longer in the database, stopping task.")
                             break
-                        else:
-                            logging.error(
-                                f"Attempt {attempt + 1}: Failed to fetch data for {link['title']} with status code {response.status_code}")
-                except Exception as e:
-                    logging.error(f"Attempt {attempt + 1}: Request failed with error {e} for {link['title']}")
 
-                await asyncio.sleep(0.5)
-
-            if success:
-                current_pairs = await parse(response.text)
-                if not current_pairs:
-                    logging.info(f"No pairs found during parsing {link['title']}.")
-                    return
-                async with dblock:
-                    q = Query()
-                    stored_pairs_dict = PairsDB.get(q.url == link['url']) or {'pairs': []}
-                    stored_pairs_keys = {convert_to_hashable(pair): pair for pair in stored_pairs_dict['pairs']}
-                    current_pairs_keys = {convert_to_hashable(pair): pair for pair in current_pairs}
-                    added_pairs_keys = set(current_pairs_keys.keys()) - set(stored_pairs_keys.keys())
-                    removed_pairs_keys = set(stored_pairs_keys.keys()) - set(current_pairs_keys.keys())
-                    PairsDB.upsert({'url': link['url'], 'pairs': list(current_pairs)}, q.url == link['url'])
-                    current_time = time.time()
-                    for key in removed_pairs_keys:
-                        logging.info(f"Pair removed: {stored_pairs_keys[key]} from {link['title']}")
-                        removal_timestamps[key] = current_time
-
-                    for key in added_pairs_keys:
-                        if key in removal_timestamps:
-                            time_since_removal = current_time - removal_timestamps[key]
-                            if time_since_removal < cooldown_seconds:
+                        message = await websocket.recv()
+                        data = json.loads(message)
+                        logging.info(f"Got data from {link['title']}")
+                        print(data)
+                        try:
+                            if message == "ping":
                                 continue
 
-                        logging.info(f"New pair added: {current_pairs_keys[key]} to {link['title']}")
-                        pair = current_pairs_keys[key]
-                        pair_dict = dict(pair)
-                        token_pair_address = pair_dict['link'].split('/')[-1]
-                        message = (
-                            f"[{escape_markdown(link['title'], version=2)}]({link['url']}): "
-                            f"[{escape_markdown(pair_dict['token_name'], version=2)}](https://photon-sol.tinyastro.io/en/lp/{token_pair_address})\n"
-                            f"Age: {escape_markdown(pair_dict['age'], version=2)}\n"
-                            f"Makers: {escape_markdown(pair_dict['makers'], version=2)}\n"
-                            f"Volume: {escape_markdown(pair_dict['volume'], version=2)}\n"
-                            f"FDV: {escape_markdown(pair_dict['fdv'], version=2)}\n"
-                            f"{escape_markdown(pair_dict['price_changes'][0], version=2)} \\| {escape_markdown(pair_dict['price_changes'][1], version=2)} \\| "
-                            f"{escape_markdown(pair_dict['price_changes'][2], version=2)} \\| {escape_markdown(pair_dict['price_changes'][3], version=2)}\n"
-                            f"{token_pair_address}"
-                        )
-                        await application.bot.send_message(chat_id='@pairpeekbot', text=message,
-                                                           parse_mode='MarkdownV2',
-                                                           disable_web_page_preview=True)
+                            if data.get("pairs") if isinstance(data, dict) else []:
+                                logging.info(f"Processing {link['title']}")
+                                current_pairs = await parse(data)
+                                logging.debug(current_pairs)
 
-                    if not added_pairs_keys and not removed_pairs_keys:
-                        logging.info("No new pairs added or removed.")
-            else:
-                logging.error("All retry attempts failed. Moving to next task.")
+                                if not current_pairs:
+                                    logging.info(f"No pairs found during parsing {link['title']}.")
+                                    continue
 
-            await asyncio.sleep(0.5)
+                                stored_pairs_dict = await redis.hgetall(f"pairs:{link['url']}")
+                                # print(stored_pairs_dict)
+                                stored_pairs_json = stored_pairs_dict.get('pairs', '[]')
+                                stored_pairs = json.loads(stored_pairs_json)
+                                stored_pairs_keys = {convert_to_hashable(pair): pair for pair in stored_pairs}
+                                current_pairs_keys = {convert_to_hashable(pair): pair for pair in current_pairs}
+                                added_pairs_keys = set(current_pairs_keys.keys()) - set(stored_pairs_keys.keys())
+                                removed_pairs_keys = set(stored_pairs_keys.keys()) - set(current_pairs_keys.keys())
+                                await redis.hset(f"pairs:{link['url']}", 'pairs', json.dumps(current_pairs))
+                                for key in removed_pairs_keys:
+                                    logging.info(f"Pair removed: {stored_pairs_keys[key]} from {link['title']}")
+
+                                for key in added_pairs_keys:
+                                    current_time = time.time()
+                                    if key in removal_timestamps and (
+                                            current_time - removal_timestamps[key] < cooldown_seconds):
+                                        logging.info(
+                                            f"Skipping {current_pairs_keys[key]} due to cooldown {link['title']}.")
+                                        continue
+
+                                    logging.info(
+                                        f"New pair added: {current_pairs_keys[key]['token_name']} to {link['title']}")
+                                    pair = current_pairs_keys[key]
+                                    pair_dict = dict(pair)
+                                    token_pair_address = pair_dict['link'].split('/')[-1]
+                                    if link['url'] not in current_links:
+                                        logging.info(f"Link {link['url']} is no longer in the database, stopping task.")
+                                        break
+
+                                    message = (
+                                        f"[{escape_markdown(link['title'], version=2)}]({link['url']}): "
+                                        f"[{escape_markdown(pair_dict['token_name'], version=2)}](https://photon-sol.tinyastro.io/en/lp/{token_pair_address})\n"
+                                        f"Age: {escape_markdown(str(format_age(pair_dict['age'])), version=2)}\n"
+                                        f"Makers: {escape_markdown(str(pair_dict['makers']), version=2)}\n"
+                                        f"Volume: {escape_markdown(str(pair_dict['volume']), version=2)}\n"
+                                        f"FDV: {escape_markdown(str(pair_dict['fdv']), version=2)}\n"
+                                        f"{escape_markdown(str(pair_dict['price_changes'][0]) + ' %', version=2)} \\| {escape_markdown(str(pair_dict['price_changes'][1]) + ' %', version=2)} \\| "
+                                        f"{escape_markdown(str(pair_dict['price_changes'][2]) + ' %', version=2)} \\| {escape_markdown(str(pair_dict['price_changes'][3]) + ' %', version=2)}\n"
+                                        f"{token_pair_address}"
+                                    )
+                                    await application.bot.send_message(chat_id=prod_chat, text=message,
+                                                                       parse_mode='MarkdownV2',
+                                                                       disable_web_page_preview=True)
+                                    removal_timestamps[key] = current_time
+                                if not added_pairs_keys and not removed_pairs_keys:
+                                    logging.info(f"{link['title']} No new pairs added or removed.")
+
+                        except Exception as e:
+                            tb = traceback.format_exc()
+                            logging.error(f"{link['title']} Unhandled error in process_link: {e}\nTraceback: {tb}")
+                            pass
+            except websockets.exceptions.ConnectionClosed as e:
+                logging.warning(f"Connection closed for {link['title']}, will attempt to reconnect: {e}")
+            except Exception as e:
+                tb = traceback.format_exc()
+
+                logging.error(f" {link['title']} Unhandled exception: {e} , {tb}")
     except asyncio.CancelledError:
-        logging.error("Task was cancelled during execution")
-    except Exception as e:
-        logging.error(f"Unhandled error in process_link: {e}")
+        logging.error(f"{link['title']} Task was cancelled during execution")
 
 
 async def MeatofTheWork(application):
-    refresh = asyncio.create_task(refreshCookies())
     tasks = {}
+    current_links = {}
     while True:
-        ldb = TinyDB('links.json')
-        current_links = {link['url']: link for link in ldb.all()}
-        for url, link in current_links.items():
-            cookies_info = getcookies_of_proxy(link['proxy']['host'], link['proxy']['port'],link['proxy']['username'], link['proxy']['password'],return_expiry_only=True)
-            logging.debug(f"Current URLS are {current_links}")
-            if cookies_info:
-                current_time = time.time()
-                if current_time - cookies_info <= 1800:
-                    if url not in tasks or tasks[url].done():
-                        try:
-                            tasks[url] = asyncio.create_task(process_link(application, link, PairsDB))
-                            logging.info(f"Started task for {url}")
-                        except Exception as e:
-                            logging.info(f"Failed to start task for {url}: {e}")
-                else:
-                    logging.info(f"Skipping task for {url} due to stale cookies.")
-
+        redis = await get_redis()
+        keys = await redis.keys('link:*')
+        for key in keys:
+            link_data = await redis.hgetall(key)
+            if 'url' in link_data and 'title' in link_data:
+                current_links[link_data['url']] = link_data
             else:
-                logging.info(f"No valid cookies found for {link['title']}, skipping task start.")
-            await asyncio.sleep(1)
+                logging.error(f"Link data incomplete for key {key}")
+
+        for url, link in current_links.items():
+            if 'host' in link and 'port' in link and 'username' in link and 'password' in link:
+                if url not in tasks or tasks[url].done():
+                    try:
+                        tasks[url] = asyncio.create_task(process_link(application, link))
+                        logging.info(f"Started task for {url}")
+                    except Exception as e:
+                        logging.error(f"Failed to start task for {url}: {e}")
+            else:
+                logging.debug(f"Skipping task for {url} due to stale cookies.")
+        else:
+            logging.debug(f"No valid cookies found for {url}, skipping task start.")
+        await asyncio.sleep(1)
 
         for url in list(tasks.keys()):
             if url not in current_links:
                 tasks[url].cancel()
                 logging.info(f"Cancelling task for {url} as it has been removed from the database.")
                 del tasks[url]
-        await asyncio.sleep(1)
 
 
 async def run_bot():
-    application = (Application.builder().token('7001922941:AAGgFLgcUup4hSrNWeQ3mrYofKnp72JPHeM').concurrent_updates(
+    test = "7192206326:AAFrOt5vXOS-_kIIHHsIv-ekGajhP73zFH4"
+    prod = '7001922941:AAGgFLgcUup4hSrNWeQ3mrYofKnp72JPHeM'
+    application = (Application.builder().token(prod).concurrent_updates(
         True).connect_timeout(
         90).read_timeout(90).write_timeout(90).build())
     application.add_handler(CommandHandler("add", add, block=False))
@@ -314,6 +356,5 @@ async def run_bot():
 
 if __name__ == "__main__":
     asyncio.set_event_loop_policy(WindowsSelectorEventLoopPolicy())
-
     setup_logging()
     asyncio.run(run_bot())
