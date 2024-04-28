@@ -17,12 +17,12 @@ from utils import setup_logging, convert_to_hashable
 from urllib.parse import urlparse
 from websockets_proxy import Proxy, proxy_connect
 
-# os.environ["PYTHONASYNCIODEBUG"] = "1"
 
 prod_chat = '@pairpeekbot'
 test_chat = '@pairpeektest'
 telegram_bot_logger = logging.getLogger('telegram')
 telegram_bot_logger.setLevel(logging.WARNING + 1)
+links_lock = asyncio.Lock()
 
 
 def format_age(timestamp_str):
@@ -176,18 +176,25 @@ def generate_sec_websocket_key():
     key = base64.b64encode(random_bytes).decode('utf-8')
     return key
 
+current_links = {}
+
 async def fetch_links():
     while True:
-        await asyncio.sleep(1)
+        await asyncio.sleep(0.1)
         redis = await get_redis()
         keys = await redis.keys('link:*')
-        current_links = {}
+        new_links = {}
         for key in keys:
-            url = await redis.hget(key, 'url')
-            if url is not None:
-                link_data = await redis.hgetall(key)
-                current_links[url] = link_data
-        return current_links
+            link_data = await redis.hgetall(key)
+            if 'url' in link_data:
+                new_links[link_data['url']] = link_data
+
+        async with links_lock:
+            if new_links != current_links:
+                current_links.clear()
+                current_links.update(new_links)
+                logging.info("Updated current_links with new data from Redis.")
+
 
 async def process_link(application, link):
     removal_timestamps = {}
@@ -217,15 +224,18 @@ async def process_link(application, link):
                 url = http_to_websocket(link['url'])
                 # print(f"going with url {url}")
                 proxy = Proxy.from_url(f"http://{link['username']}:{link['password']}@{link['host']}:{link['port']}")
-                link_fetch_task = asyncio.create_task(fetch_links())
+                async with proxy_connect(url, extra_headers=headers, open_timeout=54, ping_interval=None,
+                                         ping_timeout=None, proxy=proxy, ) as websocket:
 
-                async with proxy_connect(url, extra_headers=headers, open_timeout=54,ping_interval=None, ping_timeout=None, proxy=proxy,) as websocket:
-                    current_links = await link_fetch_task
+                    global current_links
+
                     logging.info(f"Scraping {link['title']}")
                     while True:
-                        if link['url'] not in current_links:
-                            logging.info(f"Link {link['title']} is no longer in the database, stopping task.")
-                            break
+
+                        async with links_lock:
+                            if link['url'] not in current_links:
+                                logging.info(f"Link {link['title']} is no longer in the database, stopping task.")
+                                break
 
                         message = await websocket.recv()
                         data = json.loads(message)
@@ -258,20 +268,18 @@ async def process_link(application, link):
 
                                 for key in added_pairs_keys:
                                     current_time = time.time()
-                                    if key in removal_timestamps and (
-                                            current_time - removal_timestamps[key] < cooldown_seconds):
-                                        logging.info(
-                                            f"Skipping {current_pairs_keys[key]} due to cooldown {link['title']}.")
+                                    if key in removal_timestamps and (current_time - removal_timestamps[key] < cooldown_seconds):
+                                        logging.info(f"Skipping {current_pairs_keys[key]} due to cooldown {link['title']}.")
                                         continue
 
-                                    logging.info(
-                                        f"New pair added: {current_pairs_keys[key]['token_name']} to {link['title']}")
+                                    logging.info(f"New pair added: {current_pairs_keys[key]['token_name']} to {link['title']}")
                                     pair = current_pairs_keys[key]
                                     pair_dict = dict(pair)
                                     token_pair_address = pair_dict['link'].split('/')[-1]
-                                    if link['url'] not in current_links:
-                                        logging.info(f"Link {link['url']} is no longer in the database, stopping task.")
-                                        break
+                                    async with links_lock:
+                                        if link['url'] not in current_links:
+                                            logging.info(f"Link {link['url']} is no longer in the database, stopping task.")
+                                            break
 
                                     message = (
                                         f"[{escape_markdown(link['title'], version=2)}]({link['url']}): "
@@ -302,41 +310,46 @@ async def process_link(application, link):
 
                 logging.error(f" {link['title']} Unhandled exception: {e} , {tb}")
     except asyncio.CancelledError:
-        logging.error(f"{link['title']} Task was cancelled during execution")
+        tb =traceback.format_exc()
+        logging.error(f"{link['title']} Task was cancelled during execution with traceback {tb}")
 
 
 async def MeatofTheWork(application):
     tasks = {}
-    current_links = {}
+    fetch_task = asyncio.create_task(fetch_links())
+    print('step 2')
+    global current_links
     while True:
         redis = await get_redis()
         keys = await redis.keys('link:*')
         for key in keys:
             link_data = await redis.hgetall(key)
             if 'url' in link_data and 'title' in link_data:
-                current_links[link_data['url']] = link_data
+                async with links_lock:
+                    current_links[link_data['url']] = link_data
             else:
                 logging.error(f"Link data incomplete for key {key}")
-
-        for url, link in current_links.items():
-            if 'host' in link and 'port' in link and 'username' in link and 'password' in link:
-                if url not in tasks or tasks[url].done():
-                    try:
-                        tasks[url] = asyncio.create_task(process_link(application, link))
-                        logging.info(f"Started task for {url}")
-                    except Exception as e:
-                        logging.error(f"Failed to start task for {url}: {e}")
+        async with links_lock:
+            for url, link in current_links.items():
+                if 'host' in link and 'port' in link and 'username' in link and 'password' in link:
+                    if url not in tasks or tasks[url].done():
+                        try:
+                            tasks[url] = asyncio.create_task(process_link(application, link))
+                            logging.info(f"Started task for {url}")
+                        except Exception as e:
+                            logging.error(f"Failed to start task for {url}: {e}")
+                else:
+                    logging.debug(f"Skipping task for {url} due to stale cookies.")
             else:
-                logging.debug(f"Skipping task for {url} due to stale cookies.")
-        else:
-            logging.debug(f"No valid cookies found for {url}, skipping task start.")
+                logging.debug(f"No valid cookies found for {url}, skipping task start.")
         await asyncio.sleep(1)
 
-        for url in list(tasks.keys()):
-            if url not in current_links:
-                tasks[url].cancel()
-                logging.info(f"Cancelling task for {url} as it has been removed from the database.")
-                del tasks[url]
+        async with links_lock:
+            for url in list(tasks.keys()):
+                if url not in current_links:
+                    tasks[url].cancel()
+                    logging.info(f"Cancelling task for {url} as it has been removed from the database.")
+                    del tasks[url]
 
 
 async def run_bot():
