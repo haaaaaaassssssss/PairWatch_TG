@@ -121,7 +121,6 @@ async def delete(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text(f'No links found with the exact title "{title}" to delete.')
 
 
-
 async def list_links(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.message.from_user.username
     if user_id not in WHITELISTED_USERS:
