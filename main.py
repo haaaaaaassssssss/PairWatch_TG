@@ -17,7 +17,6 @@ from utils import setup_logging, convert_to_hashable
 from urllib.parse import urlparse
 from websockets_proxy import Proxy, proxy_connect
 
-
 prod_chat = '@pairpeekbot'
 test_chat = '@pairpeektest'
 telegram_bot_logger = logging.getLogger('telegram')
@@ -78,6 +77,98 @@ async def parse(json_data):
         # print(f"Error parsing JSON data: {e}  {json_data}")
         return []
 
+
+# def http_to_websocket(http_url):
+#     parsed_url = urllib.parse.urlparse(http_url)
+#     query_params = urllib.parse.parse_qs(parsed_url.query)
+#
+#     websocket_base = "wss://io.dexscreener.com/dex/screener/pairs/h24/1?"
+#
+#     conversion_map = {
+#         'chainIds': ('filters', 'chainIds', 0),
+#         'dexIds': ('filters', 'dexIds', 0),
+#         'minLiq': ('filters', 'liquidity', 'min'),
+#         'maxLiq': ('filters', 'liquidity', 'max'),
+#         'minFdv': ('filters', 'marketCap', 'min'),
+#         'maxFdv': ('filters', 'marketCap', 'max'),
+#         'minAge': ('filters', 'pairAge', 'min'),
+#         'maxAge': ('filters', 'pairAge', 'max'),
+#         'min24HTxns': ('filters', 'txns', 'h24', 'min'),
+#         'max24HTxns': ('filters', 'txns', 'h24', 'max'),
+#         'min6HTxns': ('filters', 'txns', 'h6', 'min'),
+#         'max6HTxns': ('filters', 'txns', 'h6', 'max'),
+#         'min1HTxns': ('filters', 'txns', 'h1', 'min'),
+#         'max1HTxns': ('filters', 'txns', 'h1', 'max'),
+#         'min5MTxns': ('filters', 'txns', 'm5', 'min'),
+#         'max5MTxns': ('filters', 'txns', 'm5', 'max'),
+#         'min24HBuys': ('filters', 'buys', 'h24', 'min'),
+#         'max24HBuys': ('filters', 'buys', 'h24', 'max'),
+#         'min6HBuys': ('filters', 'buys', 'h6', 'min'),
+#         'max6HBuys': ('filters', 'buys', 'h6', 'max'),
+#         'min1HBuys': ('filters', 'buys', 'h1', 'min'),
+#         'max1HBuys': ('filters', 'buys', 'h1', 'max'),
+#         'min5MBuys': ('filters', 'buys', 'm5', 'min'),
+#         'max5MBuys': ('filters', 'buys', 'm5', 'max'),
+#         'min24HSells': ('filters', 'sells', 'h24', 'min'),
+#         'max24HSells': ('filters', 'sells', 'h24', 'max'),
+#         'min6HSells': ('filters', 'sells', 'h6', 'min'),
+#         'max6HSells': ('filters', 'sells', 'h6', 'max'),
+#         'min1HSells': ('filters', 'sells', 'h1', 'min'),
+#         'max1HSells': ('filters', 'sells', 'h1', 'max'),
+#         'min5MSells': ('filters', 'sells', 'm5', 'min'),
+#         'max5MSells': ('filters', 'sells', 'm5', 'max'),
+#         'min24HVol': ('filters', 'volume', 'h24', 'min'),
+#         'max24HVol': ('filters', 'volume', 'h24', 'max'),
+#         'min6HVol': ('filters', 'volume', 'h6', 'min'),
+#         'max6HVol': ('filters', 'volume', 'h6', 'max'),
+#         'min1HVol': ('filters', 'volume', 'h1', 'min'),
+#         'max1HVol': ('filters', 'volume', 'h1', 'max'),
+#         'min5MVol': ('filters', 'volume', 'm5', 'min'),
+#         'max5MVol': ('filters', 'volume', 'm5', 'max'),
+#         'min24HChg': ('filters', 'priceChange', 'h24', 'min'),
+#         'max24HChg': ('filters', 'priceChange', 'h24', 'max'),
+#         'min6HChg': ('filters', 'priceChange', 'h6', 'min'),
+#         'max6HChg': ('filters', 'priceChange', 'h6', 'max'),
+#         'min1HChg': ('filters', 'priceChange', 'h1', 'min'),
+#         'max1HChg': ('filters', 'priceChange', 'h1', 'max'),
+#         'min5MChg': ('filters', 'priceChange', 'm5', 'min'),
+#         'max5MChg': ('filters', 'priceChange', 'm5', 'max')
+#     }
+#     ws_params = {'rankBy': {'key': 'pairAge', 'order': query_params.get('order', ['asc'])[0]}, 'filters': {}}
+#
+#     for http_param, ws_keys in conversion_map.items():
+#         value = query_params.get(http_param)
+#         if value:
+#             current_dict = ws_params
+#             for key in ws_keys[:-1]:
+#                 if isinstance(key, int):
+#                     current_dict = current_dict.setdefault(ws_keys[-2], [None] * (key + 1))
+#                 else:
+#                     current_dict = current_dict.setdefault(key, {})
+#             current_dict[ws_keys[-1]] = value[0]
+#
+#     def build_query(prefix, item):
+#         if isinstance(item, dict):
+#             return "&".join(build_query(f"{prefix}[{k}]", v) for k, v in item.items())
+#         elif isinstance(item, list):
+#             return "&".join(
+#                 f"{prefix}[{index}]={urllib.parse.quote(str(v), safe='/:')}" for index, v in enumerate(item) if
+#                 v is not None)
+#         else:
+#             return f"{prefix}={urllib.parse.quote(str(item), safe='/:')}"
+#
+#     ws_query = build_query('rankBy', ws_params['rankBy']) + '&' + build_query('filters', ws_params['filters'])
+#     return websocket_base + ws_query
+
+
+# async def keep_connection_alive(websocket):
+#     try:
+#         while True:
+#             await websocket.ping()
+#             await asyncio.sleep(5)
+#     except websockets.exceptions.ConnectionClosed:
+#         logging.error("Connection closed while trying to send ping")
+#         return
 
 def http_to_websocket(http_url):
     parsed_url = urllib.parse.urlparse(http_url)
@@ -141,12 +232,18 @@ def http_to_websocket(http_url):
         value = query_params.get(http_param)
         if value:
             current_dict = ws_params
-            for key in ws_keys[:-1]:
-                if isinstance(key, int):
-                    current_dict = current_dict.setdefault(ws_keys[-2], [None] * (key + 1))
-                else:
-                    current_dict = current_dict.setdefault(key, {})
-            current_dict[ws_keys[-1]] = value[0]
+            if http_param == 'chainIds':
+                # Split the chainIds and enumerate for correct index mapping
+                value = value[0].split(',')
+                for i, val in enumerate(value):
+                    current_dict = ws_params['filters'].setdefault(ws_keys[1], {})
+                    current_dict[i] = val
+            else:
+                for key in ws_keys:
+                    if key == ws_keys[-1]:
+                        current_dict[key] = value[0]
+                    else:
+                        current_dict = current_dict.setdefault(key, {})
 
     def build_query(prefix, item):
         if isinstance(item, dict):
@@ -162,21 +259,14 @@ def http_to_websocket(http_url):
     return websocket_base + ws_query
 
 
-# async def keep_connection_alive(websocket):
-#     try:
-#         while True:
-#             await websocket.ping()
-#             await asyncio.sleep(5)
-#     except websockets.exceptions.ConnectionClosed:
-#         logging.error("Connection closed while trying to send ping")
-#         return
-
 def generate_sec_websocket_key():
     random_bytes = os.urandom(16)
     key = base64.b64encode(random_bytes).decode('utf-8')
     return key
 
+
 current_links = {}
+
 
 async def fetch_links():
     while True:
@@ -199,7 +289,6 @@ async def fetch_links():
 async def process_link(application, link):
     removal_timestamps = {}
     redis = await get_redis()
-
     cooldown_seconds = 300
     try:
         while True:
@@ -227,15 +316,12 @@ async def process_link(application, link):
                 async with proxy_connect(url, extra_headers=headers, open_timeout=54, ping_interval=None,
                                          ping_timeout=None, proxy=proxy, ) as websocket:
 
-                    global current_links
-
                     logging.info(f"Scraping {link['title']}")
                     while True:
-
                         async with links_lock:
                             if link['url'] not in current_links:
                                 logging.info(f"Link {link['title']} is no longer in the database, stopping task.")
-                                break
+                                raise asyncio.CancelledError
 
                         message = await websocket.recv()
                         data = json.loads(message)
@@ -263,23 +349,27 @@ async def process_link(application, link):
                                 added_pairs_keys = set(current_pairs_keys.keys()) - set(stored_pairs_keys.keys())
                                 removed_pairs_keys = set(stored_pairs_keys.keys()) - set(current_pairs_keys.keys())
                                 await redis.hset(f"pairs:{link['url']}", 'pairs', json.dumps(current_pairs))
-                                for key in removed_pairs_keys:
+                                for key in removed_pairs_keys.copy():
                                     logging.info(f"Pair removed: {stored_pairs_keys[key]} from {link['title']}")
 
-                                for key in added_pairs_keys:
+                                for key in added_pairs_keys.copy():
                                     current_time = time.time()
-                                    if key in removal_timestamps and (current_time - removal_timestamps[key] < cooldown_seconds):
-                                        logging.info(f"Skipping {current_pairs_keys[key]} due to cooldown {link['title']}.")
+                                    if key in removal_timestamps and (
+                                            current_time - removal_timestamps[key] < cooldown_seconds):
+                                        logging.info(
+                                            f"Skipping {current_pairs_keys[key]} due to cooldown {link['title']}.")
                                         continue
 
-                                    logging.info(f"New pair added: {current_pairs_keys[key]['token_name']} to {link['title']}")
+                                    logging.info(
+                                        f"New pair added: {current_pairs_keys[key]['token_name']} to {link['title']}")
                                     pair = current_pairs_keys[key]
                                     pair_dict = dict(pair)
                                     token_pair_address = pair_dict['link'].split('/')[-1]
                                     async with links_lock:
                                         if link['url'] not in current_links:
-                                            logging.info(f"Link {link['url']} is no longer in the database, stopping task.")
-                                            break
+                                            logging.info(
+                                                f"Link {link['url']} is no longer in the database, stopping task.")
+                                            raise asyncio.CancelledError
 
                                     message = (
                                         f"[{escape_markdown(link['title'], version=2)}]({link['url']}): "
@@ -307,11 +397,12 @@ async def process_link(application, link):
                 logging.warning(f"Connection closed for {link['title']}, will attempt to reconnect: {e}")
             except Exception as e:
                 tb = traceback.format_exc()
-
                 logging.error(f" {link['title']} Unhandled exception: {e} , {tb}")
+
     except asyncio.CancelledError:
-        tb =traceback.format_exc()
+        tb = traceback.format_exc()
         logging.error(f"{link['title']} Task was cancelled during execution with traceback {tb}")
+        return
 
 
 async def MeatofTheWork(application):
