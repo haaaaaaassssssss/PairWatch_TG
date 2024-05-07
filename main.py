@@ -4,7 +4,11 @@ import json
 import logging
 import os
 import random
+import sys
 import traceback
+
+from telegram.error import TelegramError
+
 import time
 import urllib
 from asyncio import WindowsSelectorEventLoopPolicy
@@ -17,6 +21,8 @@ from utils import setup_logging, convert_to_hashable
 from urllib.parse import urlparse
 from websockets_proxy import Proxy, proxy_connect
 
+
+chat_ids = ['@pairpeekbot',-4236555557]
 prod_chat = '@pairpeekbot'
 test_chat = '@pairpeektest'
 telegram_bot_logger = logging.getLogger('telegram')
@@ -290,119 +296,129 @@ async def process_link(application, link):
     removal_timestamps = {}
     redis = await get_redis()
     cooldown_seconds = 300
-    try:
-        while True:
-            # proxies = {
-            #     "https": f"http://{link['proxy']['username']}:{link['proxy']['password']}@{link['proxy']['host']}:{link['proxy']['port']}",
-            #     "http": f"http://{link['proxy']['username']}:{link['proxy']['password']}@{link['proxy']['host']}:{link['proxy']['port']}"
-            # }
-            headers = {
-                'Pragma': 'no-cache',
-                'Origin': 'https://dexscreener.com',
-                'Accept-Language': 'en-US,en;q=0.9,fr;q=0.8',
-                'Sec-WebSocket-Key': f'{generate_sec_websocket_key()}',
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
-                'Upgrade': 'websocket',
-                'Cache-Control': 'no-cache',
-                'Connection': 'Upgrade',
-                'Sec-WebSocket-Version': '13',
-                'Sec-WebSocket-Extensions': 'permessage-deflate; client_max_window_bits'
-            }
+    while True:
+        headers = {
+            'Pragma': 'no-cache',
+            'Origin': 'https://dexscreener.com',
+            'Accept-Language': 'en-US,en;q=0.9,fr;q=0.8',
+            'Sec-WebSocket-Key': f'{generate_sec_websocket_key()}',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
+            'Upgrade': 'websocket',
+            'Cache-Control': 'no-cache',
+            'Connection': 'Upgrade',
+            'Sec-WebSocket-Version': '13',
+            'Sec-WebSocket-Extensions': 'permessage-deflate; client_max_window_bits'
+        }
+        try:
+            url = http_to_websocket(link['url'])
+            proxy = Proxy.from_url(f"http://{link['username']}:{link['password']}@{link['host']}:{link['port']}")
+            async with proxy_connect(url, extra_headers=headers, open_timeout=54, ping_interval=None, ping_timeout=None,
+                                     proxy=proxy, ) as websocket:
 
-            try:
-                url = http_to_websocket(link['url'])
-                # print(f"going with url {url}")
-                proxy = Proxy.from_url(f"http://{link['username']}:{link['password']}@{link['host']}:{link['port']}")
-                async with proxy_connect(url, extra_headers=headers, open_timeout=54, ping_interval=None,
-                                         ping_timeout=None, proxy=proxy, ) as websocket:
+                logging.info(f"Scraping {link['title']}")
+                while True:
+                    async with links_lock:
+                        if link['url'] not in current_links:
+                            logging.info(f"Link {link['title']} is no longer in the database, stopping task.")
+                            logging.info("Raising error for task cancellation")
+                            logging.info(f"During cancelling task the current links are {current_links}")
+                            raise asyncio.CancelledError
 
-                    logging.info(f"Scraping {link['title']}")
-                    while True:
-                        async with links_lock:
-                            if link['url'] not in current_links:
-                                logging.info(f"Link {link['title']} is no longer in the database, stopping task.")
-                                raise asyncio.CancelledError
+                    message = await websocket.recv()
+                    data = json.loads(message)
+                    logging.info(f"Got data from {link['title']}")
+                    print(data)
+                    if message == "ping":
+                        continue
 
-                        message = await websocket.recv()
-                        data = json.loads(message)
-                        logging.info(f"Got data from {link['title']}")
-                        print(data)
-                        try:
-                            if message == "ping":
+                    if data.get("pairs") if isinstance(data, dict) else []:
+                        logging.info(f"Processing {link['title']}")
+                        current_pairs = await parse(data)
+                        logging.debug(current_pairs)
+
+                        if not current_pairs:
+                            logging.info(f"No pairs found during parsing {link['title']}.")
+                            continue
+
+                        stored_pairs_dict = await redis.hgetall(f"pairs:{link['url']}")
+                        # print(stored_pairs_dict)
+                        stored_pairs_json = stored_pairs_dict.get('pairs', '[]')
+                        stored_pairs = json.loads(stored_pairs_json)
+                        stored_pairs_keys = {convert_to_hashable(pair): pair for pair in stored_pairs}
+                        current_pairs_keys = {convert_to_hashable(pair): pair for pair in current_pairs}
+                        added_pairs_keys = frozenset(current_pairs_keys.keys()) - frozenset(stored_pairs_keys.keys())
+                        removed_pairs_keys = frozenset(stored_pairs_keys.keys()) - frozenset(current_pairs_keys.keys())
+                        await redis.hset(f"pairs:{link['url']}", 'pairs', json.dumps(current_pairs))
+                        for key in removed_pairs_keys.copy():
+                            logging.info(f"Pair removed: {stored_pairs_keys[key]} from {link['title']}")
+
+                        for key in added_pairs_keys.copy():
+                            current_time = time.time()
+                            if key in removal_timestamps and (
+                                    current_time - removal_timestamps[key] < cooldown_seconds):
+                                logging.info(
+                                    f"Skipping {current_pairs_keys[key]} due to cooldown {link['title']}.")
                                 continue
 
-                            if data.get("pairs") if isinstance(data, dict) else []:
-                                logging.info(f"Processing {link['title']}")
-                                current_pairs = await parse(data)
-                                logging.debug(current_pairs)
+                            logging.info(
+                                f"New pair added: {current_pairs_keys[key]['token_name']} to {link['title']}")
+                            pair = current_pairs_keys[key]
+                            pair_dict = dict(pair)
+                            token_pair_address = pair_dict['link'].split('/')[-1]
+                            async with links_lock:
+                                if link['url'] not in current_links:
+                                    logging.info( f"Link {link['url']} is no longer in the database, stopping task.")
+                                    logging.info("Raising error for task cancellation")
+                                    logging.info(f"During cancelling task the current links are {current_links}")
 
-                                if not current_pairs:
-                                    logging.info(f"No pairs found during parsing {link['title']}.")
-                                    continue
+                                    raise asyncio.CancelledError
 
-                                stored_pairs_dict = await redis.hgetall(f"pairs:{link['url']}")
-                                # print(stored_pairs_dict)
-                                stored_pairs_json = stored_pairs_dict.get('pairs', '[]')
-                                stored_pairs = json.loads(stored_pairs_json)
-                                stored_pairs_keys = {convert_to_hashable(pair): pair for pair in stored_pairs}
-                                current_pairs_keys = {convert_to_hashable(pair): pair for pair in current_pairs}
-                                added_pairs_keys = set(current_pairs_keys.keys()) - set(stored_pairs_keys.keys())
-                                removed_pairs_keys = set(stored_pairs_keys.keys()) - set(current_pairs_keys.keys())
-                                await redis.hset(f"pairs:{link['url']}", 'pairs', json.dumps(current_pairs))
-                                for key in removed_pairs_keys.copy():
-                                    logging.info(f"Pair removed: {stored_pairs_keys[key]} from {link['title']}")
-
-                                for key in added_pairs_keys.copy():
-                                    current_time = time.time()
-                                    if key in removal_timestamps and (
-                                            current_time - removal_timestamps[key] < cooldown_seconds):
-                                        logging.info(
-                                            f"Skipping {current_pairs_keys[key]} due to cooldown {link['title']}.")
-                                        continue
-
-                                    logging.info(
-                                        f"New pair added: {current_pairs_keys[key]['token_name']} to {link['title']}")
-                                    pair = current_pairs_keys[key]
-                                    pair_dict = dict(pair)
-                                    token_pair_address = pair_dict['link'].split('/')[-1]
-                                    async with links_lock:
-                                        if link['url'] not in current_links:
-                                            logging.info(
-                                                f"Link {link['url']} is no longer in the database, stopping task.")
-                                            raise asyncio.CancelledError
-
-                                    message = (
-                                        f"[{escape_markdown(link['title'], version=2)}]({link['url']}): "
-                                        f"[{escape_markdown(pair_dict['token_name'], version=2)}](https://photon-sol.tinyastro.io/en/lp/{token_pair_address})\n"
-                                        f"Age: {escape_markdown(str(format_age(pair_dict['age'])), version=2)}\n"
-                                        f"Makers: {escape_markdown(str(pair_dict['makers']), version=2)}\n"
-                                        f"Volume: {escape_markdown(str(pair_dict['volume']), version=2)}\n"
-                                        f"FDV: {escape_markdown(str(pair_dict['fdv']), version=2)}\n"
-                                        f"{escape_markdown(str(pair_dict['price_changes'][0]) + ' %', version=2)} \\| {escape_markdown(str(pair_dict['price_changes'][1]) + ' %', version=2)} \\| "
-                                        f"{escape_markdown(str(pair_dict['price_changes'][2]) + ' %', version=2)} \\| {escape_markdown(str(pair_dict['price_changes'][3]) + ' %', version=2)}\n"
-                                        f"{token_pair_address}"
-                                    )
-                                    await application.bot.send_message(chat_id=prod_chat, text=message,
+                            message = (
+                                f"[{escape_markdown(link['title'], version=2)}]({link['url']}): "
+                                f"[{escape_markdown(pair_dict['token_name'], version=2)}](https://photon-sol.tinyastro.io/en/lp/{token_pair_address})\n"
+                                f"Age: {escape_markdown(str(format_age(pair_dict['age'])), version=2)}\n"
+                                f"Makers: {escape_markdown(str(pair_dict['makers']), version=2)}\n"
+                                f"Volume: {escape_markdown(str(pair_dict['volume']), version=2)}\n"
+                                f"FDV: {escape_markdown(str(pair_dict['fdv']), version=2)}\n"
+                                f"{escape_markdown(str(pair_dict['price_changes'][0]) + ' %', version=2)} \\| {escape_markdown(str(pair_dict['price_changes'][1]) + ' %', version=2)} \\| "
+                                f"{escape_markdown(str(pair_dict['price_changes'][2]) + ' %', version=2)} \\| {escape_markdown(str(pair_dict['price_changes'][3]) + ' %', version=2)}\n"
+                                f"{token_pair_address}"
+                            )
+                            for chat_id in chat_ids:
+                                try:
+                                    await application.bot.send_message(chat_id=chat_id, text=message,
                                                                        parse_mode='MarkdownV2',
                                                                        disable_web_page_preview=True)
-                                    removal_timestamps[key] = current_time
-                                if not added_pairs_keys and not removed_pairs_keys:
-                                    logging.info(f"{link['title']} No new pairs added or removed.")
+                                except TelegramError as e:
+                                    print(f"Failed to send message to chat ID {chat_id}: {e}")
 
-                        except Exception as e:
-                            tb = traceback.format_exc()
-                            logging.error(f"{link['title']} Unhandled error in process_link: {e}\nTraceback: {tb}")
-                            pass
-            except websockets.exceptions.ConnectionClosed as e:
-                logging.warning(f"Connection closed for {link['title']}, will attempt to reconnect: {e}")
-            except Exception as e:
-                tb = traceback.format_exc()
-                logging.error(f" {link['title']} Unhandled exception: {e} , {tb}")
+                        removal_timestamps[key] = current_time
+                        if not added_pairs_keys and not removed_pairs_keys:
+                            logging.info(f"{link['title']} No new pairs added or removed.")
 
-    except asyncio.CancelledError:
-        tb = traceback.format_exc()
-        logging.error(f"{link['title']} Task was cancelled during execution with traceback {tb}")
-        return
+        except websockets.exceptions.ConnectionClosed as e:
+            logging.warning(f"Connection closed for {link['title']}, will attempt to reconnect: {e}")
+
+        except RuntimeError as e:
+            if "set changed size during iteration" in str(e):
+                logging.error("Caught 'set changed size during iteration'. Restarting process_link.")
+                continue
+            else:
+                logging.error("Unhandled runtime error: {}".format(e))
+                break
+
+
+        except asyncio.CancelledError:
+            tb = traceback.format_exc()
+            logging.error(f"{link['title']} Task was cancelled during execution with traceback {tb}")
+            exc_type, exc_value, exc_traceback = sys.exc_info()
+            logging.error(f"Exception type: {exc_type.__name__}, Value: {exc_value}")
+            for frame, line in traceback.walk_tb(exc_traceback):
+                filename = frame.f_code.co_filename
+                funcname = frame.f_code.co_name
+                locals_at_frame = frame.f_locals
+                logging.error(f"Error at file {filename}, line {line}, in function {funcname}.")
+                logging.error(f"Local variables at this step: {locals_at_frame}")
 
 
 async def MeatofTheWork(application):
@@ -421,6 +437,8 @@ async def MeatofTheWork(application):
             else:
                 logging.error(f"Link data incomplete for key {key}")
         async with links_lock:
+            current_links_snapshot = current_links.copy()
+
             for url, link in current_links.items():
                 if 'host' in link and 'port' in link and 'username' in link and 'password' in link:
                     if url not in tasks or tasks[url].done():
