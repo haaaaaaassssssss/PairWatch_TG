@@ -1,0 +1,37 @@
+{
+  "_default": {
+    "1": {
+      "title": "alpha",
+      "url": "https://dexscreener.com/new-pairs?rankBy=pairAge&order=asc&chainIds=solana&dexIds=raydium&minLiq=5000&maxFdv=1000000&minAge=48&min24HTxns=200&min5MVol=5000&min5MChg=1",
+      "proxy": {
+        "host": "179.61.172.80",
+        "port": 6631,
+        "username": "ecayyngo",
+        "password": "h9e81ku5p0jj",
+        "dirname": "chanel"
+      }
+    },
+    "2": {
+      "title": "bravo",
+      "url": "https://dexscreener.com/new-pairs?rankBy=pairAge&order=asc&chainIds=solana&dexIds=raydium&minLiq=5000&maxAge=24&min24HTxns=200&min24HVol=100000&min5MVol=10000&max1HChg=-50",
+      "proxy": {
+        "host": "179.61.172.234",
+        "port": 6785,
+        "username": "ecayyngo",
+        "password": "h9e81ku5p0jj",
+        "dirname": "johnkilo"
+      }
+    },
+    "3": {
+      "title": "tango",
+      "url": "https://dexscreener.com/new-pairs?rankBy=pairAge&order=asc&chainIds=solana&dexIds=raydium&minLiq=1500&maxFdv=250000&maxAge=1&min24HTxns=200&min24HVol=25000&min5MVol=10000&min24HChg=1&max5MChg=20",
+      "proxy": {
+        "host": "179.61.172.0",
+        "port": 6551,
+        "username": "ecayyngo",
+        "password": "h9e81ku5p0jj",
+        "dirname": "castlebravo"
+      }
+    }
+  }
+}
