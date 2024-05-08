@@ -21,8 +21,8 @@ from utils import setup_logging, convert_to_hashable
 from urllib.parse import urlparse
 from websockets_proxy import Proxy, proxy_connect
 
-
 chat_ids = ['@pairpeekbot',-4236555557]
+# chat_ids = ['@pairpeektest']
 prod_chat = '@pairpeekbot'
 test_chat = '@pairpeektest'
 telegram_bot_logger = logging.getLogger('telegram')
@@ -280,11 +280,13 @@ async def fetch_links():
         redis = await get_redis()
         keys = await redis.keys('link:*')
         new_links = {}
-        for key in keys:
-            link_data = await redis.hgetall(key)
-            if 'url' in link_data:
-                new_links[link_data['url']] = link_data
-
+        if keys:
+            for key in keys:
+                link_data = await redis.hgetall(key)
+                if 'url' in link_data:
+                    new_links[link_data['url']] = link_data
+        else:
+            continue
         async with links_lock:
             if new_links != current_links:
                 current_links.clear()
@@ -317,12 +319,13 @@ async def process_link(application, link):
 
                 logging.info(f"Scraping {link['title']}")
                 while True:
+                    current_linksc = current_links.copy()
                     async with links_lock:
-                        if link['url'] not in current_links:
+                        if link['url'] not in current_linksc:
                             logging.info(f"Link {link['title']} is no longer in the database, stopping task.")
                             logging.info("Raising error for task cancellation")
-                            logging.info(f"During cancelling task the current links are {current_links}")
-                            raise asyncio.CancelledError
+                            logging.info(f"During cancelling task the current links are {current_linksc}")
+                            raise OverflowError
 
                     message = await websocket.recv()
                     data = json.loads(message)
@@ -341,37 +344,39 @@ async def process_link(application, link):
                             continue
 
                         stored_pairs_dict = await redis.hgetall(f"pairs:{link['url']}")
-                        # print(stored_pairs_dict)
                         stored_pairs_json = stored_pairs_dict.get('pairs', '[]')
                         stored_pairs = json.loads(stored_pairs_json)
                         stored_pairs_keys = {convert_to_hashable(pair): pair for pair in stored_pairs}
                         current_pairs_keys = {convert_to_hashable(pair): pair for pair in current_pairs}
                         added_pairs_keys = frozenset(current_pairs_keys.keys()) - frozenset(stored_pairs_keys.keys())
                         removed_pairs_keys = frozenset(stored_pairs_keys.keys()) - frozenset(current_pairs_keys.keys())
+
                         await redis.hset(f"pairs:{link['url']}", 'pairs', json.dumps(current_pairs))
+
                         for key in removed_pairs_keys.copy():
                             logging.info(f"Pair removed: {stored_pairs_keys[key]} from {link['title']}")
 
-                        for key in added_pairs_keys.copy():
+                        for key in added_pairs_keys:
                             current_time = time.time()
-                            if key in removal_timestamps and (
-                                    current_time - removal_timestamps[key] < cooldown_seconds):
-                                logging.info(
-                                    f"Skipping {current_pairs_keys[key]} due to cooldown {link['title']}.")
+                            redis_key = f"{key[1]}"
+                            print(f"PRINTING KEY {redis_key}")
+                            last_removed_time = await redis.hget(f"removal_timestamps:{link['url']}", redis_key)
+                            await redis.hset(f"removal_timestamps:{str(link['url'])}", str(redis_key), str(current_time))
+                            if last_removed_time and (current_time - float(last_removed_time) < cooldown_seconds):
+                                logging.info(f"Skipping {current_pairs_keys[key]} due to cooldown {link['title']}.")
                                 continue
 
-                            logging.info(
-                                f"New pair added: {current_pairs_keys[key]['token_name']} to {link['title']}")
+                            logging.info(f"New pair added: {current_pairs_keys[key]['token_name']} to {link['title']}")
                             pair = current_pairs_keys[key]
                             pair_dict = dict(pair)
                             token_pair_address = pair_dict['link'].split('/')[-1]
                             async with links_lock:
-                                if link['url'] not in current_links:
-                                    logging.info( f"Link {link['url']} is no longer in the database, stopping task.")
+                                if link['url'] not in current_linksc:
+                                    logging.info(f"Link {link['url']} is no longer in the database, stopping task.")
                                     logging.info("Raising error for task cancellation")
-                                    logging.info(f"During cancelling task the current links are {current_links}")
+                                    logging.info(f"During cancelling task the current links are {current_linksc}")
 
-                                    raise asyncio.CancelledError
+                                    raise OverflowError
 
                             message = (
                                 f"[{escape_markdown(link['title'], version=2)}]({link['url']}): "
@@ -391,10 +396,13 @@ async def process_link(application, link):
                                                                        disable_web_page_preview=True)
                                 except TelegramError as e:
                                     print(f"Failed to send message to chat ID {chat_id}: {e}")
+                            print(f"PRINTING KEY {key}")
 
-                        removal_timestamps[key] = current_time
+                            await redis.hset(f"removal_timestamps:{link['url']}", str(key[1]), str(current_time))
+
                         if not added_pairs_keys and not removed_pairs_keys:
                             logging.info(f"{link['title']} No new pairs added or removed.")
+
 
         except websockets.exceptions.ConnectionClosed as e:
             logging.warning(f"Connection closed for {link['title']}, will attempt to reconnect: {e}")
@@ -420,22 +428,28 @@ async def process_link(application, link):
                 logging.error(f"Error at file {filename}, line {line}, in function {funcname}.")
                 logging.error(f"Local variables at this step: {locals_at_frame}")
 
+        except OverflowError:
+            return
 
 async def MeatofTheWork(application):
     tasks = {}
     fetch_task = asyncio.create_task(fetch_links())
-    print('step 2')
     global current_links
     while True:
         redis = await get_redis()
         keys = await redis.keys('link:*')
-        for key in keys:
-            link_data = await redis.hgetall(key)
-            if 'url' in link_data and 'title' in link_data:
-                async with links_lock:
-                    current_links[link_data['url']] = link_data
-            else:
-                logging.error(f"Link data incomplete for key {key}")
+        if keys:
+            for key in keys:
+                link_data = await redis.hgetall(key)
+                if 'url' in link_data and 'title' in link_data:
+                    async with links_lock:
+                        current_links[link_data['url']] = link_data
+                else:
+                    logging.error(f"Link data incomplete for key {key}")
+        else:
+            await asyncio.sleep(0.2)
+            continue
+
         async with links_lock:
             current_links_snapshot = current_links.copy()
 
