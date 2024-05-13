@@ -38,7 +38,6 @@ async def add(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     redis = await aioredis.from_url("redis://localhost", decode_responses=True)
 
-    # Check if any entry exists with the same title and URL
     existing_keys = await redis.keys("link:*")
     duplicate_found = False
     for key in existing_keys:
