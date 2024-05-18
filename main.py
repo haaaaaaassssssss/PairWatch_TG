@@ -276,7 +276,7 @@ current_links = {}
 
 async def fetch_links():
     while True:
-        await asyncio.sleep(0.1)
+        await asyncio.sleep(0.5)
         redis = await get_redis()
         keys = await redis.keys('link:*')
         new_links = {}
@@ -382,13 +382,16 @@ async def process_link(application, link):
 
                             message = (
                                 f"[{escape_markdown(link['title'], version=2)}]({link['url']}): "
-                                f"[{escape_markdown(pair_dict['token_name'], version=2)}](https://photon-sol.tinyastro.io/en/lp/{token_pair_address})\n"
+                                f"[{escape_markdown(pair_dict['token_name'], version=2)}](https://photon-sol.tinyastro.io/en/lp/{token_pair_address}) \\| "
+                                f"[DexS](http://dexscreener.com/solana/{token_pair_address})\n"
                                 f"Age: {escape_markdown(str(format_age(pair_dict['age'])), version=2)}\n"
                                 f"Makers: {escape_markdown(str(pair_dict['makers']), version=2)}\n"
                                 f"Volume: {escape_markdown(str(pair_dict['volume']), version=2)}\n"
                                 f"FDV: {escape_markdown(str(pair_dict['fdv']), version=2)}\n"
-                                f"{escape_markdown(str(pair_dict['price_changes'][0]) + ' %', version=2)} \\| {escape_markdown(str(pair_dict['price_changes'][1]) + ' %', version=2)} \\| "
-                                f"{escape_markdown(str(pair_dict['price_changes'][2]) + ' %', version=2)} \\| {escape_markdown(str(pair_dict['price_changes'][3]) + ' %', version=2)}\n"
+                                f"{escape_markdown(str(pair_dict['price_changes'][0]) + ' %', version=2)} \\| "
+                                f"{escape_markdown(str(pair_dict['price_changes'][1]) + ' %', version=2)} \\| "
+                                f"{escape_markdown(str(pair_dict['price_changes'][2]) + ' %', version=2)} \\| "
+                                f"{escape_markdown(str(pair_dict['price_changes'][3]) + ' %', version=2)}\n"
                                 f"{token_pair_address}"
                             )
                             for chat_id in chat_ids:
