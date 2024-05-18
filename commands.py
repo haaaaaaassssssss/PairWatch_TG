@@ -36,7 +36,7 @@ async def add(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text('Usage: /add "<title>" <link>')
         return
 
-    redis = await aioredis.from_url("redis://localhost", decode_responses=True)
+    redis = await get_redis()
 
     existing_keys = await redis.keys("link:*")
     duplicate_found = False
@@ -92,7 +92,7 @@ async def delete(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     title = ' '.join(context.args).strip()
-    redis = await aioredis.from_url("redis://localhost", decode_responses=True)
+    redis = await get_redis()
 
     keys = await redis.keys("link:*")
     if not keys:
@@ -126,7 +126,7 @@ async def list_links(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         await update.message.reply_text('You are not authorized to use this command.')
         return
 
-    redis = await aioredis.from_url("redis://localhost", decode_responses=True)
+    redis = await get_redis()
     keys = await redis.keys('link:*')
     if not keys:
         await update.message.reply_text('No links found.')
