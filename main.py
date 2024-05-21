@@ -383,7 +383,7 @@ async def process_link(application, link):
                             message = (
                                 f"[{escape_markdown(link['title'], version=2)}]({link['url']}): "
                                 f"[{escape_markdown(pair_dict['token_name'], version=2)}](https://photon-sol.tinyastro.io/en/lp/{token_pair_address}) \\| "
-                                f"[DexS](http://dexscreener.com/solana/{token_pair_address})\n"
+                                f"[DexS](https://dexscreener.com/solana/{token_pair_address})\n"
                                 f"Age: {escape_markdown(str(format_age(pair_dict['age'])), version=2)}\n"
                                 f"Makers: {escape_markdown(str(pair_dict['makers']), version=2)}\n"
                                 f"Volume: {escape_markdown(str(pair_dict['volume']), version=2)}\n"
