@@ -360,6 +360,7 @@ async def process_link(application, link):
                                 f"{escape_markdown(str(pair_dict['volume'][1]) + ' 1h', version=2)} \\| "
                                 f"{escape_markdown(str(pair_dict['volume'][2]) + ' 6h', version=2)} \\| "
                                 f"{escape_markdown(str(pair_dict['volume'][3]) + ' 24h', version=2)}\n"
+                                f"Liquidity: {escape_markdown(str(pair_dict['liquidity']), version=2)}\n"
                                 f"FDV: {escape_markdown(str(pair_dict['fdv']), version=2)}\n"
 
                                 "Buys/Sales: "
