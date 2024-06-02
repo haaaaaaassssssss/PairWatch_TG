@@ -3,12 +3,10 @@ import base64
 import json
 import logging
 import os
-import random
 import sys
 import traceback
-
+import httpx
 from telegram.error import TelegramError
-
 import time
 import urllib
 from asyncio import WindowsSelectorEventLoopPolicy
@@ -23,8 +21,7 @@ from websockets_proxy import Proxy, proxy_connect
 
 chat_ids = ['@pairpeekbot', -4236555557]
 # chat_ids = ['@pairpeektest']
-prod_chat = '@pairpeekbot'
-test_chat = '@pairpeektest'
+# test_chat = '@pairpeektest'
 telegram_bot_logger = logging.getLogger('telegram')
 telegram_bot_logger.setLevel(logging.WARNING + 1)
 links_lock = asyncio.Lock()
@@ -46,6 +43,50 @@ def format_age(timestamp_str):
         return f"{seconds}s"
 
 
+def format_number(num):
+    if num >= 1000000000:
+        return str(num)
+    elif num >= 1000000:
+        return str(round(num / 1000000, 1)) + "m"
+    elif num >= 1000:
+        return str(round(num / 1000, 1)) + "k"
+    else:
+        return str(num)
+
+
+async def AuthorityCheck(address):
+    print(f'Authority check address {address}')
+    try:
+
+        headers = {
+            'accept': 'application/json',
+        }
+        async with httpx.AsyncClient() as client:
+
+            response = await client.get(
+                f'https://api.rugcheck.xyz/v1/tokens/{address.strip()}/report',
+                headers=headers,
+            )
+            if response.status_code == 200:
+                json = response.json()
+                authority_status = {
+                    "freezeAuthority": True if json["token"]["freezeAuthority"] else False,
+                    "mintAuthority": True if json["token"]["mintAuthority"] else False,
+                    "SpecialOwnership": True if ("Top 10 holders high ownership" in json or
+                                                 "Single holder ownership" in json or
+                                                 "High ownership" in json) else False,
+                    "LP": True if "Large amount of LP unlocked" in json else False
+                }
+                return authority_status
+            else:
+                logging.info(f"Authority check returned an odd response {response.status_code , response.text}")
+                return None
+
+    except Exception as e:
+        logging.info(f"An error occurred: {e}")
+        return None
+
+
 async def parse(json_data):
     try:
         pairs = json_data.get("pairs", [])
@@ -54,6 +95,7 @@ async def parse(json_data):
         for pair in pairs:
             try:
                 base_token = pair.get("baseToken", {})
+                mint_address = base_token.get("address","")
                 token_name = base_token.get("name", "")
                 pair_address = pair.get("pairAddress", "")
                 link = f"https://dexscreener.com/solana/{pair_address}"
@@ -61,120 +103,37 @@ async def parse(json_data):
                 age = datetime.utcfromtimestamp(created_at / 1000).strftime(
                     '%Y-%m-%d %H:%M:%S') if created_at else "N/A"
                 makers = pair.get("makers", {}).get("h24", 0)
-                volume = pair.get("volume", {}).get("h24", 0.0)
+                volume = [format_number(pair.get("volume", {}).get(interval, 0)) for interval in
+                          ['m5', 'h1', 'h6', 'h24']]
                 fdv = pair.get("marketCap", 0)
                 price_changes = [pair.get("priceChange", {}).get(interval, 0) for interval in ['m5', 'h1', 'h6', 'h24']]
-
+                liquidity = pair.get("liquidity", 0).get("usd", 0)
+                buys = [pair.get("buyers", {}).get(interval, 0) for interval in ['m5', 'h1', 'h6', 'h24']]
+                sales = [pair.get("sellers", {}).get(interval, 0) for interval in ['m5', 'h1', 'h6', 'h24']]
                 parsed_pair = {
+                    "mint_address": mint_address,
+
+                    "address": pair_address,
                     "token_name": token_name,
                     "link": link,
                     "age": age,
-                    "makers": makers,
+                    "makers": format_number(makers),
                     "volume": volume,
-                    "fdv": fdv,
+                    "liquidity": format_number(liquidity),
+                    "fdv": format_number(fdv),
+                    "buys_changes": buys,
+                    "sales_changes": sales,
                     "price_changes": price_changes
                 }
                 parsed_pairs.append(parsed_pair)
             except Exception as e:
-                logging.debug(f"Error processing pair: {e}")
+                print(f"Error processing pair: {e}")
 
         return parsed_pairs
     except Exception as e:
         # print(f"Error parsing JSON data: {e}  {json_data}")
         return []
 
-
-# def http_to_websocket(http_url):
-#     parsed_url = urllib.parse.urlparse(http_url)
-#     query_params = urllib.parse.parse_qs(parsed_url.query)
-#
-#     websocket_base = "wss://io.dexscreener.com/dex/screener/pairs/h24/1?"
-#
-#     conversion_map = {
-#         'chainIds': ('filters', 'chainIds', 0),
-#         'dexIds': ('filters', 'dexIds', 0),
-#         'minLiq': ('filters', 'liquidity', 'min'),
-#         'maxLiq': ('filters', 'liquidity', 'max'),
-#         'minFdv': ('filters', 'marketCap', 'min'),
-#         'maxFdv': ('filters', 'marketCap', 'max'),
-#         'minAge': ('filters', 'pairAge', 'min'),
-#         'maxAge': ('filters', 'pairAge', 'max'),
-#         'min24HTxns': ('filters', 'txns', 'h24', 'min'),
-#         'max24HTxns': ('filters', 'txns', 'h24', 'max'),
-#         'min6HTxns': ('filters', 'txns', 'h6', 'min'),
-#         'max6HTxns': ('filters', 'txns', 'h6', 'max'),
-#         'min1HTxns': ('filters', 'txns', 'h1', 'min'),
-#         'max1HTxns': ('filters', 'txns', 'h1', 'max'),
-#         'min5MTxns': ('filters', 'txns', 'm5', 'min'),
-#         'max5MTxns': ('filters', 'txns', 'm5', 'max'),
-#         'min24HBuys': ('filters', 'buys', 'h24', 'min'),
-#         'max24HBuys': ('filters', 'buys', 'h24', 'max'),
-#         'min6HBuys': ('filters', 'buys', 'h6', 'min'),
-#         'max6HBuys': ('filters', 'buys', 'h6', 'max'),
-#         'min1HBuys': ('filters', 'buys', 'h1', 'min'),
-#         'max1HBuys': ('filters', 'buys', 'h1', 'max'),
-#         'min5MBuys': ('filters', 'buys', 'm5', 'min'),
-#         'max5MBuys': ('filters', 'buys', 'm5', 'max'),
-#         'min24HSells': ('filters', 'sells', 'h24', 'min'),
-#         'max24HSells': ('filters', 'sells', 'h24', 'max'),
-#         'min6HSells': ('filters', 'sells', 'h6', 'min'),
-#         'max6HSells': ('filters', 'sells', 'h6', 'max'),
-#         'min1HSells': ('filters', 'sells', 'h1', 'min'),
-#         'max1HSells': ('filters', 'sells', 'h1', 'max'),
-#         'min5MSells': ('filters', 'sells', 'm5', 'min'),
-#         'max5MSells': ('filters', 'sells', 'm5', 'max'),
-#         'min24HVol': ('filters', 'volume', 'h24', 'min'),
-#         'max24HVol': ('filters', 'volume', 'h24', 'max'),
-#         'min6HVol': ('filters', 'volume', 'h6', 'min'),
-#         'max6HVol': ('filters', 'volume', 'h6', 'max'),
-#         'min1HVol': ('filters', 'volume', 'h1', 'min'),
-#         'max1HVol': ('filters', 'volume', 'h1', 'max'),
-#         'min5MVol': ('filters', 'volume', 'm5', 'min'),
-#         'max5MVol': ('filters', 'volume', 'm5', 'max'),
-#         'min24HChg': ('filters', 'priceChange', 'h24', 'min'),
-#         'max24HChg': ('filters', 'priceChange', 'h24', 'max'),
-#         'min6HChg': ('filters', 'priceChange', 'h6', 'min'),
-#         'max6HChg': ('filters', 'priceChange', 'h6', 'max'),
-#         'min1HChg': ('filters', 'priceChange', 'h1', 'min'),
-#         'max1HChg': ('filters', 'priceChange', 'h1', 'max'),
-#         'min5MChg': ('filters', 'priceChange', 'm5', 'min'),
-#         'max5MChg': ('filters', 'priceChange', 'm5', 'max')
-#     }
-#     ws_params = {'rankBy': {'key': 'pairAge', 'order': query_params.get('order', ['asc'])[0]}, 'filters': {}}
-#
-#     for http_param, ws_keys in conversion_map.items():
-#         value = query_params.get(http_param)
-#         if value:
-#             current_dict = ws_params
-#             for key in ws_keys[:-1]:
-#                 if isinstance(key, int):
-#                     current_dict = current_dict.setdefault(ws_keys[-2], [None] * (key + 1))
-#                 else:
-#                     current_dict = current_dict.setdefault(key, {})
-#             current_dict[ws_keys[-1]] = value[0]
-#
-#     def build_query(prefix, item):
-#         if isinstance(item, dict):
-#             return "&".join(build_query(f"{prefix}[{k}]", v) for k, v in item.items())
-#         elif isinstance(item, list):
-#             return "&".join(
-#                 f"{prefix}[{index}]={urllib.parse.quote(str(v), safe='/:')}" for index, v in enumerate(item) if
-#                 v is not None)
-#         else:
-#             return f"{prefix}={urllib.parse.quote(str(item), safe='/:')}"
-#
-#     ws_query = build_query('rankBy', ws_params['rankBy']) + '&' + build_query('filters', ws_params['filters'])
-#     return websocket_base + ws_query
-
-
-# async def keep_connection_alive(websocket):
-#     try:
-#         while True:
-#             await websocket.ping()
-#             await asyncio.sleep(5)
-#     except websockets.exceptions.ConnectionClosed:
-#         logging.error("Connection closed while trying to send ping")
-#         return
 
 def http_to_websocket(http_url):
     parsed_url = urllib.parse.urlparse(http_url)
@@ -379,21 +338,46 @@ async def process_link(application, link):
                                     logging.info(f"During cancelling task the current links are {current_linksc}")
 
                                     raise OverflowError
-
+                            authoritycheck = await AuthorityCheck(pair_dict['mint_address'])
+                            print(f" AUTHORITY CHECK {authoritycheck}")
+                            authority_symbols = ''
+                            if authoritycheck is not None:
+                                authority_symbols = (
+                                        ('⛔️⛔️' if authoritycheck.get('freezeAuthority', False) else '') +
+                                        (' ' + '❄️FA' if authoritycheck.get('freezeAuthority', False) else '') +
+                                        (' ' + 'MA♾️' if authoritycheck.get('mintAuthority', False) else '') +
+                                        (' ' + '🔓LU' if authoritycheck.get('LPUNLOCKED', False) else '') +
+                                        (' ' + '⚠️SO' if authoritycheck.get('SpecialOwnership', False) else '')
+                                )
                             message = (
+                                f"{authority_symbols}\n"
                                 f"[{escape_markdown(link['title'], version=2)}]({link['url']}): "
                                 f"[{escape_markdown(pair_dict['token_name'], version=2)}](https://photon-sol.tinyastro.io/en/lp/{token_pair_address}) \\| "
                                 f"[DexS](https://dexscreener.com/solana/{token_pair_address})\n"
                                 f"Age: {escape_markdown(str(format_age(pair_dict['age'])), version=2)}\n"
-                                f"Makers: {escape_markdown(str(pair_dict['makers']), version=2)}\n"
-                                f"Volume: {escape_markdown(str(pair_dict['volume']), version=2)}\n"
+                                f"Volume: "
+                                f"{escape_markdown(str(pair_dict['volume'][0]) + ' 5m', version=2)} \\| "
+                                f"{escape_markdown(str(pair_dict['volume'][1]) + ' 1h', version=2)} \\| "
+                                f"{escape_markdown(str(pair_dict['volume'][2]) + ' 6h', version=2)} \\| "
+                                f"{escape_markdown(str(pair_dict['volume'][3]) + ' 24h', version=2)}\n"
                                 f"FDV: {escape_markdown(str(pair_dict['fdv']), version=2)}\n"
-                                f"{escape_markdown(str(pair_dict['price_changes'][0]) + ' %', version=2)} \\| "
-                                f"{escape_markdown(str(pair_dict['price_changes'][1]) + ' %', version=2)} \\| "
-                                f"{escape_markdown(str(pair_dict['price_changes'][2]) + ' %', version=2)} \\| "
-                                f"{escape_markdown(str(pair_dict['price_changes'][3]) + ' %', version=2)}\n"
-                                f"{token_pair_address}"
+
+                                "Buys/Sales: "
+                                f"{escape_markdown(str(pair_dict['buys_changes'][0]), version=2)}/"
+                                f"{escape_markdown(str(pair_dict['sales_changes'][0]) + ' 5m', version=2)} \\|"
+                                f"{escape_markdown(str(pair_dict['buys_changes'][1]), version=2)}/"
+                                f"{escape_markdown(str(pair_dict['sales_changes'][1]) + ' 1h', version=2)} \\|"
+                                f"{escape_markdown(str(pair_dict['buys_changes'][2]), version=2)}/"
+                                f"{escape_markdown(str(pair_dict['sales_changes'][2]) + ' 6h', version=2)} \\|"
+                                f"{escape_markdown(str(pair_dict['buys_changes'][3]), version=2)}/"
+                                f"{escape_markdown(str(pair_dict['sales_changes'][3]) + ' 24h', version=2)} \\\n"
+                                "Price Changes: "
+                                f"{escape_markdown(str(pair_dict['price_changes'][0]) + ' % 5m', version=2)} \\|"
+                                f"{escape_markdown(str(pair_dict['price_changes'][1]) + ' % 1h', version=2)} \\|"
+                                f"{escape_markdown(str(pair_dict['price_changes'][2]) + ' % 6h', version=2)} \\|"
+                                f"{escape_markdown(str(pair_dict['price_changes'][3]) + ' % 24h', version=2)}\n"
                             )
+
                             for chat_id in chat_ids:
                                 try:
                                     await application.bot.send_message(chat_id=chat_id, text=message,
