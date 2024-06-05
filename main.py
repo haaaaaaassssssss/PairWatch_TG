@@ -21,7 +21,6 @@ from websockets_proxy import Proxy, proxy_connect
 
 chat_ids = ['@pairpeekbot', -4236555557]
 # chat_ids = ['@pairpeektest']
-# test_chat = '@pairpeektest'
 telegram_bot_logger = logging.getLogger('telegram')
 telegram_bot_logger.setLevel(logging.WARNING + 1)
 links_lock = asyncio.Lock()
@@ -72,14 +71,14 @@ async def AuthorityCheck(address):
                 authority_status = {
                     "freezeAuthority": True if json["token"]["freezeAuthority"] else False,
                     "mintAuthority": True if json["token"]["mintAuthority"] else False,
-                    "SpecialOwnership": True if ("Top 10 holders high ownership" in json or
-                                                 "Single holder ownership" in json or
-                                                 "High ownership" in json) else False,
-                    "LP": True if "Large amount of LP unlocked" in json else False
+                    "SpecialOwnership": True if ("Top 10 holders high ownership" in str(json) or
+                                                 "Single holder ownership" in str(json) or
+                                                 "High ownership" in str(json)) else False,
+                    "LP": True if "Large amount of LP Unlocked" in str(json) else False
                 }
                 return authority_status
             else:
-                logging.info(f"Authority check returned an odd response {response.status_code , response.text}")
+                logging.info(f"Authority check returned an odd response {response.status_code, response.text}")
                 return None
 
     except Exception as e:
@@ -95,7 +94,8 @@ async def parse(json_data):
         for pair in pairs:
             try:
                 base_token = pair.get("baseToken", {})
-                mint_address = base_token.get("address","")
+                symbol = base_token.get("symbol", "")
+                mint_address = base_token.get("address", "")
                 token_name = base_token.get("name", "")
                 pair_address = pair.get("pairAddress", "")
                 link = f"https://dexscreener.com/solana/{pair_address}"
@@ -123,7 +123,9 @@ async def parse(json_data):
                     "fdv": format_number(fdv),
                     "buys_changes": buys,
                     "sales_changes": sales,
-                    "price_changes": price_changes
+                    "price_changes": price_changes,
+                    "symbol": symbol,
+
                 }
                 parsed_pairs.append(parsed_pair)
             except Exception as e:
@@ -256,7 +258,7 @@ async def fetch_links():
 async def process_link(application, link):
     removal_timestamps = {}
     redis = await get_redis()
-    cooldown_seconds = 300
+    cooldown_seconds = 3600
     while True:
         headers = {
             'Pragma': 'no-cache',
@@ -343,40 +345,37 @@ async def process_link(application, link):
                             authority_symbols = ''
                             if authoritycheck is not None:
                                 authority_symbols = (
-                                        ('⛔️⛔️' if authoritycheck.get('freezeAuthority', False) else '') +
-                                        (' ' + '❄️FA' if authoritycheck.get('freezeAuthority', False) else '') +
-                                        (' ' + 'MA♾️' if authoritycheck.get('mintAuthority', False) else '') +
-                                        (' ' + '🔓LU' if authoritycheck.get('LPUNLOCKED', False) else '') +
-                                        (' ' + '⚠️SO' if authoritycheck.get('SpecialOwnership', False) else '')
-                                )
+                                                     ('❄️FA' if authoritycheck.get('freezeAuthority', False) else '') +
+                                                     ('♾️MA' if authoritycheck.get('mintAuthority', False) else '') +
+                                                     ('🔓LU' if authoritycheck.get('LP', False) else '') +
+                                                     ('⚠️SO' if authoritycheck.get('SpecialOwnership', False) else '')
+                                                     )
+                                if authority_symbols:
+                                    authority_symbols = '⛔️⛔' + authority_symbols
                             message = (
-                                f"{authority_symbols}\n"
-                                f"[{escape_markdown(link['title'], version=2)}]({link['url']}): "
+                                f"{authority_symbols} [{escape_markdown(link['title'], version=2)}]({link['url']}): "
                                 f"[{escape_markdown(pair_dict['token_name'], version=2)}](https://photon-sol.tinyastro.io/en/lp/{token_pair_address}) \\| "
-                                f"[DexS](https://dexscreener.com/solana/{token_pair_address})\n"
+                                f"[{escape_markdown(pair_dict['symbol'], version=2)}](https://dexscreener.com/solana/{token_pair_address})\n"
                                 f"Age: {escape_markdown(str(format_age(pair_dict['age'])), version=2)}\n"
                                 f"Volume: "
-                                f"{escape_markdown(str(pair_dict['volume'][0]) + ' 5m', version=2)} \\| "
-                                f"{escape_markdown(str(pair_dict['volume'][1]) + ' 1h', version=2)} \\| "
-                                f"{escape_markdown(str(pair_dict['volume'][2]) + ' 6h', version=2)} \\| "
-                                f"{escape_markdown(str(pair_dict['volume'][3]) + ' 24h', version=2)}\n"
+                                f"{escape_markdown(str(pair_dict['volume'][0]), version=2)} \\| "
+                                f"{escape_markdown(str(pair_dict['volume'][1]), version=2)} \\| "
+                                f"{escape_markdown(str(pair_dict['volume'][2]), version=2)} \\| "
+                                f"{escape_markdown(str(pair_dict['volume'][3]), version=2)}\n"
                                 f"Liquidity: {escape_markdown(str(pair_dict['liquidity']), version=2)}\n"
                                 f"FDV: {escape_markdown(str(pair_dict['fdv']), version=2)}\n"
-
-                                "Buys/Sales: "
                                 f"{escape_markdown(str(pair_dict['buys_changes'][0]), version=2)}/"
-                                f"{escape_markdown(str(pair_dict['sales_changes'][0]) + ' 5m', version=2)} \\|"
+                                f"{escape_markdown(str(pair_dict['sales_changes'][0]), version=2)} \\| "
                                 f"{escape_markdown(str(pair_dict['buys_changes'][1]), version=2)}/"
-                                f"{escape_markdown(str(pair_dict['sales_changes'][1]) + ' 1h', version=2)} \\|"
+                                f"{escape_markdown(str(pair_dict['sales_changes'][1]), version=2)} \\| "
                                 f"{escape_markdown(str(pair_dict['buys_changes'][2]), version=2)}/"
-                                f"{escape_markdown(str(pair_dict['sales_changes'][2]) + ' 6h', version=2)} \\|"
+                                f"{escape_markdown(str(pair_dict['sales_changes'][2]), version=2)} \\| "
                                 f"{escape_markdown(str(pair_dict['buys_changes'][3]), version=2)}/"
-                                f"{escape_markdown(str(pair_dict['sales_changes'][3]) + ' 24h', version=2)} \\\n"
-                                "Price Changes: "
-                                f"{escape_markdown(str(pair_dict['price_changes'][0]) + ' % 5m', version=2)} \\|"
-                                f"{escape_markdown(str(pair_dict['price_changes'][1]) + ' % 1h', version=2)} \\|"
-                                f"{escape_markdown(str(pair_dict['price_changes'][2]) + ' % 6h', version=2)} \\|"
-                                f"{escape_markdown(str(pair_dict['price_changes'][3]) + ' % 24h', version=2)}\n"
+                                f"{escape_markdown(str(pair_dict['sales_changes'][3]), version=2)}\n"
+                                f"{escape_markdown(str(pair_dict['price_changes'][0]) + ' %', version=2)} \\| "
+                                f"{escape_markdown(str(pair_dict['price_changes'][1]) + ' %', version=2)} \\| "
+                                f"{escape_markdown(str(pair_dict['price_changes'][2]) + ' %', version=2)} \\| "
+                                f"{escape_markdown(str(pair_dict['price_changes'][3]) + ' %', version=2)}\n"
                             )
 
                             for chat_id in chat_ids:
