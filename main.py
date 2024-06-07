@@ -53,7 +53,8 @@ def format_number(num):
         return str(num)
 
 
-async def AuthorityCheck(address):
+async def AuthorityCheck(pair_dict):
+    address = pair_dict['mint_address']
     print(f'Authority check address {address}')
     try:
 
@@ -74,8 +75,10 @@ async def AuthorityCheck(address):
                     "SpecialOwnership": True if ("Top 10 holders high ownership" in str(json) or
                                                  "Single holder ownership" in str(json) or
                                                  "High ownership" in str(json)) else False,
-                    "LP": True if "Large amount of LP Unlocked" in str(json) else False
+                    "LP": True if "Large amount of LP Unlocked" in str(json) else False,
+                    "LinkCount": pair_dict.get("linkCount",False)
                 }
+                logging.info(authority_status)
                 return authority_status
             else:
                 logging.info(f"Authority check returned an odd response {response.status_code, response.text}")
@@ -87,12 +90,14 @@ async def AuthorityCheck(address):
 
 
 async def parse(json_data):
+    logging.info(json_data)
     try:
         pairs = json_data.get("pairs", [])
         parsed_pairs = []
 
         for pair in pairs:
             try:
+                link_count = True if pair.get("profile",{}).get("linkCount",False) < 1 or None or "" else False
                 base_token = pair.get("baseToken", {})
                 symbol = base_token.get("symbol", "")
                 mint_address = base_token.get("address", "")
@@ -112,7 +117,6 @@ async def parse(json_data):
                 sales = [pair.get("sellers", {}).get(interval, 0) for interval in ['m5', 'h1', 'h6', 'h24']]
                 parsed_pair = {
                     "mint_address": mint_address,
-
                     "address": pair_address,
                     "token_name": token_name,
                     "link": link,
@@ -125,8 +129,10 @@ async def parse(json_data):
                     "sales_changes": sales,
                     "price_changes": price_changes,
                     "symbol": symbol,
+                    "linkCount": link_count,
 
                 }
+                logging.info(f"parsed pair {parsed_pair}")
                 parsed_pairs.append(parsed_pair)
             except Exception as e:
                 print(f"Error processing pair: {e}")
@@ -291,7 +297,7 @@ async def process_link(application, link):
                     message = await websocket.recv()
                     data = json.loads(message)
                     # logging.info(f"Got data from {link['title']}")
-                    print(data)
+                    #print(data)
                     if message == "ping":
                         continue
 
@@ -340,18 +346,21 @@ async def process_link(application, link):
                                     logging.info(f"During cancelling task the current links are {current_linksc}")
 
                                     raise OverflowError
-                            authoritycheck = await AuthorityCheck(pair_dict['mint_address'])
+                            authoritycheck = await AuthorityCheck(pair_dict)
                             print(f" AUTHORITY CHECK {authoritycheck}")
                             authority_symbols = ''
                             if authoritycheck is not None:
                                 authority_symbols = (
-                                                     ('❄️FA' if authoritycheck.get('freezeAuthority', False) else '') +
-                                                     ('♾️MA' if authoritycheck.get('mintAuthority', False) else '') +
-                                                     ('🔓LU' if authoritycheck.get('LP', False) else '') +
-                                                     ('⚠️SO' if authoritycheck.get('SpecialOwnership', False) else '')
-                                                     )
+                                    ('❄️FA' if authoritycheck.get('freezeAuthority', False) else '') +
+                                    ('♾️MA' if authoritycheck.get('mintAuthority', False) else '') +
+                                    ('🔓LU' if authoritycheck.get('LP', False) else '') +
+                                    ('⚠️SO' if authoritycheck.get('SpecialOwnership', False) else '') +
+                                    ('0️⃣NU' if authoritycheck.get('LinkCount', False) else '')
+                                )
                                 if authority_symbols:
                                     authority_symbols = '⛔️⛔' + authority_symbols
+                            # logging.info(f"DEBUG PAIR {pair}")
+                            # logging.info(f"AUTHORITY DEBUG {authority_symbols}")
                             message = (
                                 f"{authority_symbols} [{escape_markdown(link['title'], version=2)}]({link['url']}): "
                                 f"[{escape_markdown(pair_dict['token_name'], version=2)}](https://photon-sol.tinyastro.io/en/lp/{token_pair_address}) \\| "
