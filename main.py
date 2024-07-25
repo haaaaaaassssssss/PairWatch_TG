@@ -6,20 +6,20 @@ import os
 import sys
 import traceback
 import httpx
+import websockets
 from telegram.error import TelegramError
 import time
 import urllib
 from asyncio import WindowsSelectorEventLoopPolicy
 from datetime import datetime
-import websockets
+from websockets_proxy import Proxy
 from telegram.ext import Application, CommandHandler
 from telegram.helpers import escape_markdown
 from commands import add, delete, list_links, get_redis
 from utils import setup_logging, convert_to_hashable
 from urllib.parse import urlparse
-from websockets_proxy import Proxy, proxy_connect
 
-chat_ids = ['@pairpeekbot', -4236555557]
+chat_ids = ['@pairpeekbot', -1002249608086]
 # chat_ids = ['@pairpeektest']
 telegram_bot_logger = logging.getLogger('telegram')
 telegram_bot_logger.setLevel(logging.WARNING + 1)
@@ -76,7 +76,7 @@ async def AuthorityCheck(pair_dict):
                                                  "Single holder ownership" in str(json) or
                                                  "High ownership" in str(json)) else False,
                     "LP": True if "Large amount of LP Unlocked" in str(json) else False,
-                    "LinkCount": pair_dict.get("linkCount",False)
+                    "LinkCount": pair_dict.get("linkCount", False)
                 }
                 logging.info(authority_status)
                 return authority_status
@@ -97,7 +97,7 @@ async def parse(json_data):
 
         for pair in pairs:
             try:
-                link_count = True if pair.get("profile",{}).get("linkCount",False) < 1 or None or "" else False
+                link_count = True if pair.get("profile", {}).get("linkCount", False) < 1 or None or "" else False
                 base_token = pair.get("baseToken", {})
                 symbol = base_token.get("symbol", "")
                 mint_address = base_token.get("address", "")
@@ -135,7 +135,7 @@ async def parse(json_data):
                 logging.info(f"parsed pair {parsed_pair}")
                 parsed_pairs.append(parsed_pair)
             except Exception as e:
-                print(f"Error processing pair: {e}")
+                logging.info(f"Error processing pair: {e}")
 
         return parsed_pairs
     except Exception as e:
@@ -243,22 +243,34 @@ current_links = {}
 
 async def fetch_links():
     while True:
-        await asyncio.sleep(0.5)
-        redis = await get_redis()
-        keys = await redis.keys('link:*')
-        new_links = {}
-        if keys:
-            for key in keys:
-                link_data = await redis.hgetall(key)
-                if 'url' in link_data:
-                    new_links[link_data['url']] = link_data
-        else:
-            continue
-        async with links_lock:
-            if new_links != current_links:
-                current_links.clear()
-                current_links.update(new_links)
-                logging.info("Updated current_links with new data from Redis.")
+        try:
+            await asyncio.sleep(0.5)
+            redis = await get_redis()
+            keys = await redis.keys('link:*')
+            new_links = {}
+            if keys:
+                for key in keys:
+                    try:
+                        link_data = await redis.hgetall(key)
+                        if 'url' in link_data:
+                            new_links[link_data['url']] = link_data
+                    except Exception as e:
+                        logging.error(f"Error processing key {key}: {str(e)}")
+            else:
+                continue
+
+            try:
+                async with links_lock:
+                    if new_links != current_links:
+                        current_links.clear()
+                        current_links.update(new_links)
+                        logging.info("Updated current_links with new data from Redis.")
+            except Exception as e:
+                logging.error(f"Error updating current_links: {str(e)}")
+
+        except Exception as e:
+            logging.error(f"Error in fetch_links: {str(e)}")
+            await asyncio.sleep(5)
 
 
 async def process_link(application, link):
@@ -269,9 +281,9 @@ async def process_link(application, link):
         headers = {
             'Pragma': 'no-cache',
             'Origin': 'https://dexscreener.com',
-            'Accept-Language': 'en-US,en;q=0.9,fr;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.9',
             'Sec-WebSocket-Key': f'{generate_sec_websocket_key()}',
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
             'Upgrade': 'websocket',
             'Cache-Control': 'no-cache',
             'Connection': 'Upgrade',
@@ -280,9 +292,11 @@ async def process_link(application, link):
         }
         try:
             url = http_to_websocket(link['url'])
-            proxy = Proxy.from_url(f"http://{link['username']}:{link['password']}@{link['host']}:{link['port']}")
-            async with proxy_connect(url, extra_headers=headers, open_timeout=54, ping_interval=None, ping_timeout=None,
-                                     proxy=proxy, ) as websocket:
+
+            proxy = Proxy.from_url(f"http://ecayyngo:h9e81ku5p0jj@179.61.172.89:6640")
+
+            async with websockets.connect(url, extra_headers=headers, open_timeout=54, ping_interval=None,
+                                          ping_timeout=None) as websocket:
 
                 logging.info(f"Scraping {link['title']}")
                 while True:
@@ -302,9 +316,9 @@ async def process_link(application, link):
                         continue
 
                     if data.get("pairs") if isinstance(data, dict) else []:
-                        logging.info(f"Processing {link['title']}")
+                        logging.info(f"Found pairs key for  {link['title']}")
                         current_pairs = await parse(data)
-                        logging.debug(current_pairs)
+                        #logging.debug(current_pairs)
 
                         if not current_pairs:
                             logging.info(f"No pairs found during parsing {link['title']}.")
@@ -347,44 +361,34 @@ async def process_link(application, link):
 
                                     raise OverflowError
                             authoritycheck = await AuthorityCheck(pair_dict)
-                            print(f" AUTHORITY CHECK {authoritycheck}")
                             authority_symbols = ''
                             if authoritycheck is not None:
                                 authority_symbols = (
-                                    ('❄️FA' if authoritycheck.get('freezeAuthority', False) else '') +
-                                    ('♾️MA' if authoritycheck.get('mintAuthority', False) else '') +
-                                    ('🔓LU' if authoritycheck.get('LP', False) else '') +
-                                    ('⚠️SO' if authoritycheck.get('SpecialOwnership', False) else '') +
-                                    ('0️⃣NU' if authoritycheck.get('LinkCount', False) else '')
+                                        ('❄️FA' if authoritycheck.get('freezeAuthority', False) else '') +
+                                        ('♾️MA' if authoritycheck.get('mintAuthority', False) else '') +
+                                        ('🔓LU' if authoritycheck.get('LP', False) else '') +
+                                        ('⚠️SO' if authoritycheck.get('SpecialOwnership', False) else '') +
+                                        ('0️⃣NU' if authoritycheck.get('LinkCount', False) else '')
                                 )
                                 if authority_symbols:
                                     authority_symbols = '⛔️⛔' + authority_symbols
                             # logging.info(f"DEBUG PAIR {pair}")
                             # logging.info(f"AUTHORITY DEBUG {authority_symbols}")
                             message = (
-                                f"{authority_symbols} [{escape_markdown(link['title'], version=2)}]({link['url']}): "
-                                f"[{escape_markdown(pair_dict['token_name'], version=2)}](https://photon-sol.tinyastro.io/en/lp/{token_pair_address}) \\| "
-                                f"[{escape_markdown(pair_dict['symbol'], version=2)}](https://dexscreener.com/solana/{token_pair_address})\n"
-                                f"Age: {escape_markdown(str(format_age(pair_dict['age'])), version=2)}\n"
-                                f"Volume: "
-                                f"{escape_markdown(str(pair_dict['volume'][0]), version=2)} \\| "
-                                f"{escape_markdown(str(pair_dict['volume'][1]), version=2)} \\| "
-                                f"{escape_markdown(str(pair_dict['volume'][2]), version=2)} \\| "
-                                f"{escape_markdown(str(pair_dict['volume'][3]), version=2)}\n"
-                                f"Liquidity: {escape_markdown(str(pair_dict['liquidity']), version=2)}\n"
-                                f"FDV: {escape_markdown(str(pair_dict['fdv']), version=2)}\n"
-                                f"{escape_markdown(str(pair_dict['buys_changes'][0]), version=2)}/"
-                                f"{escape_markdown(str(pair_dict['sales_changes'][0]), version=2)} \\| "
-                                f"{escape_markdown(str(pair_dict['buys_changes'][1]), version=2)}/"
-                                f"{escape_markdown(str(pair_dict['sales_changes'][1]), version=2)} \\| "
-                                f"{escape_markdown(str(pair_dict['buys_changes'][2]), version=2)}/"
-                                f"{escape_markdown(str(pair_dict['sales_changes'][2]), version=2)} \\| "
-                                f"{escape_markdown(str(pair_dict['buys_changes'][3]), version=2)}/"
-                                f"{escape_markdown(str(pair_dict['sales_changes'][3]), version=2)}\n"
-                                f"{escape_markdown(str(pair_dict['price_changes'][0]) + ' %', version=2)} \\| "
-                                f"{escape_markdown(str(pair_dict['price_changes'][1]) + ' %', version=2)} \\| "
-                                f"{escape_markdown(str(pair_dict['price_changes'][2]) + ' %', version=2)} \\| "
-                                f"{escape_markdown(str(pair_dict['price_changes'][3]) + ' %', version=2)}\n"
+                                f"{authority_symbols} {escape_markdown(pair_dict['token_name'], version=2)} \\| {escape_markdown(pair_dict['symbol'], version=2)}\n\n"
+                                f"⏱️ Age: {escape_markdown(format_age(pair_dict['age']), version=2)}\n"
+                                f"💹 Market cap: {escape_markdown(pair_dict['fdv'], version=2)}\n"
+                                f"📊 Volume: {escape_markdown(str(pair_dict['volume'][0]), version=2)}\n"
+                                f"💧 Liquidity: {escape_markdown(str(pair_dict['liquidity']), version=2)}\n"
+                                f"🧮 Change: {escape_markdown(str(pair_dict['price_changes'][0]) + '%', version=2)}\n"
+                                f"💻 Traders: {escape_markdown(str(pair_dict.get('makers', 'N/A')), version=2)}\n\n"
+                                f"[Photon](https://photon\\-sol\\.tinyastro\\.io/en/lp/{token_pair_address}) \\| "
+                                f"[BirdEye](https://birdeye\\.so/token/{token_pair_address}?chain=solana) \\| "
+                                f"[DexS](https://dexscreener\\.com/solana/{token_pair_address}) \\| "
+                                f"[Solscan](https://solscan\\.io/token/{token_pair_address}) \\| "
+                                f"[Twitter](https://twitter\\.com/search?q={escape_markdown(token_pair_address, version=2)}&f=live)\n\n"
+                                f"`{token_pair_address}`\\|"
+                                f"[{link['title']}]\n"
                             )
 
                             for chat_id in chat_ids:
@@ -400,10 +404,11 @@ async def process_link(application, link):
 
                         if not added_pairs_keys and not removed_pairs_keys:
                             logging.info(f"{link['title']} No new pairs added or removed.")
-
+                    logging.info(f"No Pairs Data {link['title']} but instead we got {data}")
 
         except websockets.exceptions.ConnectionClosed as e:
             logging.warning(f"Connection closed for {link['title']}, will attempt to reconnect: {e}")
+            logging.warning(message)
             continue
 
 
@@ -417,6 +422,7 @@ async def process_link(application, link):
 
 
         except asyncio.CancelledError:
+            logging.warning(message)
             tb = traceback.format_exc()
             logging.error(f"{link['title']} Task was cancelled during execution with traceback {tb}")
             exc_type, exc_value, exc_traceback = sys.exc_info()
@@ -430,6 +436,7 @@ async def process_link(application, link):
 
         except OverflowError:
             logging.info(f"Overflow error called for {link['title']} stopping task!")
+            logging.warning(message)
             return
 
 
@@ -437,44 +444,63 @@ async def MeatofTheWork(application):
     tasks = {}
     fetch_task = asyncio.create_task(fetch_links())
     global current_links
+
     while True:
-        redis = await get_redis()
-        keys = await redis.keys('link:*')
-        if keys:
-            for key in keys:
-                link_data = await redis.hgetall(key)
-                if 'url' in link_data and 'title' in link_data:
-                    async with links_lock:
-                        current_links[link_data['url']] = link_data
-                else:
-                    logging.error(f"Link data incomplete for key {key}")
-        else:
-            await asyncio.sleep(0.2)
-            continue
+        try:
+            redis = await get_redis()
+            keys = await redis.keys('link:*')
 
-        async with links_lock:
-            current_links_snapshot = current_links.copy()
-
-            for url, link in current_links.items():
-                if 'host' in link and 'port' in link and 'username' in link and 'password' in link:
-                    if url not in tasks or tasks[url].done():
-                        try:
-                            tasks[url] = asyncio.create_task(process_link(application, link))
-                            logging.info(f"Started task for {url}")
-                        except Exception as e:
-                            logging.error(f"Failed to start task for {url}: {e}")
-                else:
-                    logging.debug(f"Skipping task for {url} due to stale cookies.")
+            if keys:
+                for key in keys:
+                    try:
+                        link_data = await redis.hgetall(key)
+                        if 'url' in link_data and 'title' in link_data:
+                            async with links_lock:
+                                current_links[link_data['url']] = link_data
+                        else:
+                            logging.error(f"Link data incomplete for key {key}. Data: {link_data}")
+                    except Exception as e:
+                        logging.error(f"Error processing key {key}: {str(e)}\n{traceback.format_exc()}")
             else:
-                logging.debug(f"No valid cookies found for {url}, skipping task start.")
-        await asyncio.sleep(1)
+                logging.debug("No keys found in Redis. Sleeping for 1 second.")
+                await asyncio.sleep(1)
+                continue
 
-        async with links_lock:
-            for url in list(tasks.keys()):
-                if url not in current_links:
-                    tasks[url].cancel()
-                    logging.info(f"Cancelling task for {url} as it has been removed from the database.")
-                    del tasks[url]
+            try:
+                async with links_lock:
+                    current_links_snapshot = current_links.copy()
+
+                    for url, link in current_links.items():
+                        if all(k in link for k in ['host', 'port', 'username', 'password']):
+                            if url not in tasks or tasks[url].done():
+                                try:
+                                    tasks[url] = asyncio.create_task(process_link(application, link))
+                                    logging.info(f"Started task for {url}")
+                                except Exception as e:
+                                    logging.error(f"Failed to start task for {url}: {str(e)}\n{traceback.format_exc()}")
+                        else:
+                            logging.debug(f"Skipping task for {url} due to missing required fields. Link data: {link}")
+            except Exception as e:
+                logging.error(f"Error processing links: {str(e)}\n{traceback.format_exc()}")
+
+            await asyncio.sleep(1)
+
+            try:
+                async with links_lock:
+                    for url in list(tasks.keys()):
+                        if url not in current_links:
+                            try:
+                                tasks[url].cancel()
+                                logging.info(f"Cancelling task for {url} as it has been removed from the database.")
+                                del tasks[url]
+                            except Exception as e:
+                                logging.error(f"Error cancelling task for {url}: {str(e)}\n{traceback.format_exc()}")
+            except Exception as e:
+                logging.error(f"Error cleaning up tasks: {str(e)}\n{traceback.format_exc()}")
+
+        except Exception as e:
+            logging.error(f"Unexpected error in MeatofTheWork: {str(e)}\n{traceback.format_exc()}")
+            await asyncio.sleep(5)
 
 
 async def run_bot():
