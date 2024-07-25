@@ -385,8 +385,8 @@ async def process_link(application, link):
                                 f"[Photon](https://photon\\-sol\\.tinyastro\\.io/en/lp/{token_pair_address}) \\| "
                                 f"[BirdEye](https://birdeye\\.so/token/{token_pair_address}?chain=solana) \\| "
                                 f"[DexS](https://dexscreener\\.com/solana/{token_pair_address}) \\| "
-                                f"[Solscan](https://solscan\\.io/token/{token_pair_address}) \\| "
-                                f"[Twitter](https://twitter\\.com/search?q={escape_markdown(token_pair_address, version=2)}&f=live)\n\n"
+                                f"[Solscan](https://solscan\\.io/token/So11111111111111111111111111111111111111112/{pair_dict['mint_address']}) \\| "
+                                f"[Twitter](https://twitter\\.com/search?q={escape_markdown(pair_dict['mint_address'], version=2)}&f=live)\n\n"
                                 f"`{token_pair_address}`\\|"
                                 f"[{link['title']}]\n"
                             )
