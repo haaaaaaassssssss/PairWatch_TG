@@ -85,7 +85,7 @@ async def AuthorityCheck(pair_dict):
                 return None
 
     except Exception as e:
-        logging.info(f"An error occurred: {e}")
+        logging.info(f"An error occurred: {traceback.format_exc()}")
         return None
 
 
@@ -358,8 +358,8 @@ async def process_link(application, link):
                                     logging.info(f"Link {link['url']} is no longer in the database, stopping task.")
                                     logging.info("Raising error for task cancellation")
                                     logging.info(f"During cancelling task the current links are {current_linksc}")
-
                                     raise OverflowError
+
                             authoritycheck = await AuthorityCheck(pair_dict)
                             authority_symbols = ''
                             if authoritycheck is not None:
@@ -372,6 +372,8 @@ async def process_link(application, link):
                                 )
                                 if authority_symbols:
                                     authority_symbols = '⛔️⛔' + authority_symbols
+                            else:
+                                authority_symbols = '⚠️ Authority Check Failed'
                             # logging.info(f"DEBUG PAIR {pair}")
                             # logging.info(f"AUTHORITY DEBUG {authority_symbols}")
                             message = (
@@ -404,7 +406,7 @@ async def process_link(application, link):
 
                         if not added_pairs_keys and not removed_pairs_keys:
                             logging.info(f"{link['title']} No new pairs added or removed.")
-                    logging.info(f"No Pairs Data {link['title']} but instead we got {data}")
+                    logging.info(f"No Pairs Data {link['title']}")
 
         except websockets.exceptions.ConnectionClosed as e:
             logging.warning(f"Connection closed for {link['title']}, will attempt to reconnect: {e}")
@@ -462,7 +464,7 @@ async def MeatofTheWork(application):
                     except Exception as e:
                         logging.error(f"Error processing key {key}: {str(e)}\n{traceback.format_exc()}")
             else:
-                logging.debug("No keys found in Redis. Sleeping for 1 second.")
+                logging.error("No keys found in Redis. Sleeping for 1 second.")
                 await asyncio.sleep(1)
                 continue
 
@@ -479,7 +481,7 @@ async def MeatofTheWork(application):
                                 except Exception as e:
                                     logging.error(f"Failed to start task for {url}: {str(e)}\n{traceback.format_exc()}")
                         else:
-                            logging.debug(f"Skipping task for {url} due to missing required fields. Link data: {link}")
+                            logging.error(f"Skipping task for {url} due to missing required fields. Link data: {link}")
             except Exception as e:
                 logging.error(f"Error processing links: {str(e)}\n{traceback.format_exc()}")
 
@@ -491,7 +493,7 @@ async def MeatofTheWork(application):
                         if url not in current_links:
                             try:
                                 tasks[url].cancel()
-                                logging.info(f"Cancelling task for {url} as it has been removed from the database.")
+                                logging.error(f"Cancelling task for {url} as it has been removed from the database.")
                                 del tasks[url]
                             except Exception as e:
                                 logging.error(f"Error cancelling task for {url}: {str(e)}\n{traceback.format_exc()}")
