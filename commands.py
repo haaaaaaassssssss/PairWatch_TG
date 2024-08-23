@@ -59,31 +59,31 @@ async def add(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 logging.info(f"Duplicate link attempt by user {user_id}: {title} - {url}")
                 return
 
-            available_proxies = [proxy for proxy in proxies['proxies'] if
-                                 not await redis.hget(f"proxy:{proxy['host']}", "in_use")]
-
-            if not available_proxies:
-                await update.message.reply_text('No available proxies to assign.')
-                logging.warning("No available proxies for new link")
-                return
-
-            selected_proxy = available_proxies[0]
-            proxy_data = {
-                'host': selected_proxy['host'],
-                'port': selected_proxy['port'],
-                'username': selected_proxy['username'],
-                'password': selected_proxy['password'],
-                'dirname': selected_proxy['dirname']
-            }
+            # available_proxies = [proxy for proxy in proxies['proxies'] if
+            #                      not await redis.hget(f"proxy:{proxy['host']}", "in_use")]
+            #
+            # if not available_proxies:
+            #     await update.message.reply_text('No available proxies to assign.')
+            #     logging.warning("No available proxies for new link")
+            #     return
+            #
+            # selected_proxy = available_proxies[0]
+            # proxy_data = {
+            #     'host': selected_proxy['host'],
+            #     'port': selected_proxy['port'],
+            #     'username': selected_proxy['username'],
+            #     'password': selected_proxy['password'],
+            #     'dirname': selected_proxy['dirname']
+            # }
 
             await redis.hset(f"link:{url}", mapping={
                 'title': title,
                 'url': url,
-                **proxy_data
+                #**proxy_data
             })
-            await redis.hset(f"proxy:{selected_proxy['host']}", "in_use", "true")
-            await update.message.reply_text(f'Added link: "{title}" at {url} with proxy {selected_proxy["host"]}')
-            logging.info(f"Link added by user {user_id}: {title} at {url} with proxy {selected_proxy['host']}")
+            # await redis.hset(f"proxy:{selected_proxy['host']}", "in_use", "true")
+            await update.message.reply_text(f'Added link: "{title}" at {url}')
+            logging.info(f"Link added by user {user_id}: {title} at {url} ")
 
         except Exception as e:
             await update.message.reply_text('An error occurred while processing your request. Please try again later.')
