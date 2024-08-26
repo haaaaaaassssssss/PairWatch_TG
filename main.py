@@ -470,18 +470,13 @@ async def MeatofTheWork(application):
 
             try:
                 async with links_lock:
-                    current_links_snapshot = current_links.copy()
-
                     for url, link in current_links.items():
-                        if all(k in link for k in ['host', 'port', 'username', 'password']):
                             if url not in tasks or tasks[url].done():
                                 try:
                                     tasks[url] = asyncio.create_task(process_link(application, link))
                                     logging.info(f"Started task for {url}")
                                 except Exception as e:
                                     logging.error(f"Failed to start task for {url}: {str(e)}\n{traceback.format_exc()}")
-                        else:
-                            logging.error(f"Skipping task for {url} due to missing required fields. Link data: {link}")
             except Exception as e:
                 logging.error(f"Error processing links: {str(e)}\n{traceback.format_exc()}")
 
