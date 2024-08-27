@@ -1,15 +1,12 @@
 import json
 import logging
 import traceback
-
 import redis.asyncio as aioredis
 from telegram import Update
 from telegram.ext import ContextTypes
-
 WHITELISTED_USERS = ['belgxz', 'roidv']
 
-with open('proxies.json', 'r') as f:
-    proxies = json.load(f)
+
 
 
 async def get_redis():

@@ -206,7 +206,6 @@ def http_to_websocket(http_url):
         if value:
             current_dict = ws_params
             if http_param == 'chainIds':
-                # Split the chainIds and enumerate for correct index mapping
                 value = value[0].split(',')
                 for i, val in enumerate(value):
                     current_dict = ws_params['filters'].setdefault(ws_keys[1], {})
